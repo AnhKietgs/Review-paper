@@ -108,8 +108,9 @@ export default function ReviewDetail() {
 
   const locked = ["completed", "approved", "queued", "running", "interrupted"].includes(review.status);
   const numberedFindings = review.findings.map((finding, index) => ({ finding, index }));
-  const claimFindings = numberedFindings.filter(({ finding }) => finding.kind !== "question");
+  const claimFindings = numberedFindings.filter(({ finding }) => !["question", "omission"].includes(finding.kind));
   const questions = numberedFindings.filter(({ finding }) => finding.kind === "question" && finding.status === "grounded" && finding.evidence.length > 0);
+  const omissions = numberedFindings.filter(({ finding }) => finding.kind === "omission");
   const statusCount = (status: string) => claimFindings.filter(({ finding }) => finding.status === status).length;
   const uncertainCount = statusCount("uncertain") + statusCount("needs_human_review");
   const visibleFindings = claimFindings
@@ -219,6 +220,25 @@ export default function ReviewDetail() {
             </div>)}
           </article>)}
         </section>
+
+        {!!omissions.length && <section className="author-questions" aria-labelledby="omission-title">
+          <h2 id="omission-title">Thông tin được rà soát trên toàn bài ({omissions.length})</h2>
+          <p className="helper-text">Kết quả chỉ áp dụng cho văn bản trích xuất của paper v{review.paper_content_version}. Một đoạn trích riêng lẻ không chứng minh thông tin vắng mặt trong toàn bài.</p>
+          {omissions.map(({ finding, index }) => <article className="finding" key={finding.id}>
+            <div className="finding-heading">
+              <div><span className="finding-index">RÀ SOÁT TOÀN BÀI</span><h3>{finding.criterion_code.replaceAll("_", " ")}</h3></div>
+              <span className={`status ${finding.status}`}>{finding.status === "not_reported" ? "Không tìm thấy trong bản trích xuất" : "Chưa thể kết luận"}</span>
+            </div>
+            <label>Nội dung rà soát
+              <textarea disabled={locked} value={finding.claim} onChange={(event) => {
+                setReview({ ...review, findings: review.findings.map((item, itemIndex) => itemIndex === index ? { ...item, claim: event.target.value } : item) });
+                setDirty(true);
+              }} />
+            </label>
+            <p className="finding-meta">{finding.verdict}</p>
+            <a className="source-link" href={`/api/v1/papers/${review.paper_id}/source?version=${review.paper_content_version}`} target="_blank" rel="noreferrer">Mở toàn bộ tài liệu gốc ↗</a>
+          </article>)}
+        </section>}
 
         {!locked && <div className="actions review-final-actions">
           <button className="secondary" disabled={busy || !dirty} onClick={save}>Lưu chỉnh sửa</button>

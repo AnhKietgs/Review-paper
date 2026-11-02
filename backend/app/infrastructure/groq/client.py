@@ -7,7 +7,7 @@ import time
 from groq import APIError, Groq, RateLimitError
 from pydantic import ValidationError
 
-from app.agents.ports import LLMFailure
+from app.agents.ports import LLMFailure, RateLimitPause
 
 MAX_RATE_LIMIT_WAIT_SECONDS = 300
 
@@ -69,7 +69,9 @@ class GroqClient:
             except RateLimitError as exc:
                 wait_seconds = self._retry_wait(exc)
                 if rate_waited[0] + wait_seconds > MAX_RATE_LIMIT_WAIT_SECONDS:
-                    raise LLMFailure("rate_limited") from exc
+                    raise RateLimitPause(
+                        min(wait_seconds, MAX_RATE_LIMIT_WAIT_SECONDS)
+                    ) from exc
                 rate_retries += 1
                 rate_waited[0] += wait_seconds
                 if self._on_retry:

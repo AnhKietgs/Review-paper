@@ -1,5 +1,7 @@
 """Serializable harness state and document permission scope."""
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -32,6 +34,7 @@ class RunState(BaseModel):
     findings: list[dict] = Field(default_factory=list)
     repair_queue: list[dict] = Field(default_factory=list)
     repair_attempted_ids: list[str] = Field(default_factory=list)
+    omission_audits: list[dict] = Field(default_factory=list)
     repair_count: int = 0
     max_repairs: int = 8
     analysis: dict[str, list[str]] = Field(default_factory=dict)
@@ -39,9 +42,10 @@ class RunState(BaseModel):
     batch_count: int = 0
     turn_count: int = 0
     max_batches: int = 20
-    max_turns: int = 80
+    max_turns: int = 120
     status: str = "running"
     call_counts: dict[str, int] = Field(default_factory=dict)
     initialized: bool = False
     error_code: str | None = None
+    cooldown_until: datetime | None = None
     llm_mode: str = "fixture"

@@ -1,11 +1,14 @@
 """On-demand workers, guarded routing and bounded document loop."""
 
+import json
+
 from app.harness.events import RunEventRecorder
 from app.harness.memory import RunMemory
 from app.harness.runner import AgentRunner
 from app.harness.state import RunScope, RunState
 from app.infrastructure.groq.fixture_client import FixtureClient
-from app.agents.schemas import ScientificOutput, VerificationOutput
+from app.agents.ports import LLMFailure
+from app.agents.schemas import AgentAction, ScientificOutput, VerificationOutput
 
 
 class Catalog:
@@ -232,3 +235,210 @@ def test_question_rejected_by_verifier_is_omitted_after_one_repair():
     assert state.repair_count == 1
     assert state.findings == []
     assert any(item["action"] == "question_omitted" for item in events.items)
+
+
+def test_contribution_bad_quote_gets_one_source_bound_repair():
+    class ContributionClient(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            if schema is ScientificOutput:
+                context = json.loads(messages[-1]["content"])
+                result.findings[0].criterion_code = "contribution"
+                result.findings[0].claim = "The author proposes an AI model."
+                if "repair_request" not in context:
+                    result.findings[0].evidence[0].quote = "not an exact quote"
+            return result
+
+    state, events = execute(run_state(), ContributionClient())
+    assert state.status == "completed"
+    assert state.repair_count == 1
+    assert len(state.findings) == 1
+    assert state.findings[0]["criterion_code"] == "contribution"
+    assert state.findings[0]["status"] == "supported"
+    assert any(item["action"] == "finding_repaired" for item in events.items)
+
+
+def test_omission_is_deferred_until_full_document_audit():
+    class OmissionClient(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            context = json.loads(messages[-1]["content"])
+            if schema is ScientificOutput:
+                result.findings = (
+                    result.findings[:1]
+                    if context["chunks"][0]["id"] == "main-1" else []
+                )
+                if not result.findings:
+                    return result
+                result.findings[0].kind = "omission"
+                result.findings[0].claim = "quy trình đánh giá mô hình"
+                result.findings[0].evidence = []
+            if schema is VerificationOutput and context.get("omission_audit"):
+                result.assessments[0].status = "unsupported"
+                result.assessments[0].reason = "No evaluation procedure in these chunks"
+            return result
+
+    state, events = execute(
+        run_state(chunks=["main-1", "main-2", "main-3"]),
+        OmissionClient(),
+    )
+    assert state.status == "completed"
+    assert len(state.findings) == 1
+    assert state.findings[0]["status"] == "not_reported"
+    assert "v1" in state.findings[0]["claim"]
+    audits = [item for item in events.items if item["action"] == "omission_audited"]
+    assert len(audits) == 2
+    assert {chunk for event in audits for chunk in event["payload"]["source_ids"]} == {
+        "main-1", "main-2", "main-3",
+    }
+
+
+def test_omission_found_on_later_page_is_not_published():
+    class DetailFound(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            context = json.loads(messages[-1]["content"])
+            if schema is ScientificOutput:
+                result.findings = (
+                    result.findings[:1]
+                    if context["chunks"][0]["id"] == "main-1" else []
+                )
+                if not result.findings:
+                    return result
+                result.findings[0].kind = "omission"
+                result.findings[0].claim = "quy trình đánh giá mô hình"
+                result.findings[0].evidence = []
+            if schema is VerificationOutput and context.get("omission_audit"):
+                result.assessments[0].status = (
+                    "supported" if context["chunks"][-1]["id"] == "main-3"
+                    else "unsupported"
+                )
+            return result
+
+    state, events = execute(
+        run_state(chunks=["main-1", "main-2", "main-3"]), DetailFound()
+    )
+    assert state.status == "completed"
+    assert state.findings == []
+    assert any(item["action"] == "omission_refuted" for item in events.items)
+
+
+def test_incomplete_paper_never_publishes_omission():
+    class OmissionClient(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            if schema is ScientificOutput:
+                result.findings = result.findings[:1]
+                result.findings[0].kind = "limitation"
+                result.findings[0].claim = (
+                    "Bài báo không cung cấp thông tin chi tiết về "
+                    "quy trình đánh giá mô hình."
+                )
+            return result
+
+    state, events = execute(
+        run_state(chunks=["main-1", "main-2", "main-3"], max_batches=1),
+        OmissionClient(),
+    )
+    assert state.status == "incomplete"
+    assert not any(item["status"] == "not_reported" for item in state.findings)
+    assert len(state.omission_audits) == 1
+    assert state.omission_audits[0]["finding"]["kind"] == "omission"
+    assert not any(item["action"] == "omission_audited" for item in events.items)
+
+
+def test_ambiguous_omission_audit_stays_uncertain():
+    class AmbiguousClient(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            context = json.loads(messages[-1]["content"])
+            if schema is ScientificOutput:
+                result.findings[0].kind = "omission"
+                result.findings[0].claim = "quy trình đánh giá mô hình"
+                result.findings[0].evidence = []
+            if schema is VerificationOutput and context.get("omission_audit"):
+                result.assessments[0].status = "uncertain"
+            return result
+
+    state, _ = execute(run_state(), AmbiguousClient())
+    assert state.status == "completed"
+    assert state.findings[0]["kind"] == "omission"
+    assert state.findings[0]["status"] == "uncertain"
+    assert state.findings[0]["claim"].startswith("Chưa thể kết luận")
+
+
+def test_invalid_supervisor_json_uses_only_eligible_action():
+    class InvalidSupervisor(FixtureClient):
+        def generate_json(self, messages, schema):
+            if schema is AgentAction:
+                raise LLMFailure("invalid_model_output")
+            return super().generate_json(messages, schema)
+
+    state, events = execute(run_state({"ref": 1}), InvalidSupervisor())
+    assert state.status == "completed"
+    assert state.reference_assessments["ref"]["status"] == "assessed"
+    decisions = [
+        item["payload"]["selected_action"] for item in events.items
+        if item["action"] == "decision"
+    ]
+    assert "compare" in decisions
+    assert "finish" in decisions
+    assert any(item["action"] == "supervisor_fallback" for item in events.items)
+
+
+def test_omission_topics_share_each_document_scan():
+    class SeveralTopics(FixtureClient):
+        def __init__(self):
+            super().__init__()
+            self.audit_sizes = []
+
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            context = json.loads(messages[-1]["content"])
+            if schema is ScientificOutput:
+                if context["chunks"][0]["id"] != "main-1":
+                    result.findings = []
+                else:
+                    original = result.findings[0]
+                    result.findings = []
+                    for topic in ("tuyển mẫu", "đánh giá", "đạo đức"):
+                        finding = original.model_copy(deep=True)
+                        finding.kind = "omission"
+                        finding.claim = topic
+                        finding.evidence = []
+                        result.findings.append(finding)
+            if schema is VerificationOutput and context.get("omission_audit"):
+                self.audit_sizes.append(len(context["pending_findings"]))
+                for assessment in result.assessments:
+                    assessment.status = "unsupported"
+            return result
+
+    client = SeveralTopics()
+    state, _ = execute(
+        run_state(chunks=["main-1", "main-2", "main-3"]), client
+    )
+    assert state.status == "completed"
+    assert client.audit_sizes == [3, 3]
+    assert len(state.findings) == 3
+
+
+def test_invalid_omission_audit_does_not_claim_detail_is_absent():
+    class InvalidAudit(FixtureClient):
+        def generate_json(self, messages, schema):
+            context = json.loads(messages[-1]["content"])
+            if schema is VerificationOutput and context.get("omission_audit"):
+                raise LLMFailure("invalid_model_output")
+            result = super().generate_json(messages, schema)
+            if schema is ScientificOutput:
+                result.findings[0].kind = "omission"
+                result.findings[0].claim = "quy trình đánh giá mô hình"
+                result.findings[0].evidence = []
+            return result
+
+    state, events = execute(run_state(), InvalidAudit())
+    assert state.status == "completed"
+    assert state.findings[0]["status"] == "uncertain"
+    assert "không tìm thấy" not in state.findings[0]["claim"].lower()
+    assert any(
+        item["action"] == "omission_audit_unavailable" for item in events.items
+    )

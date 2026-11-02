@@ -1,7 +1,12 @@
 """Background queue, restart recovery and checkpoint resume."""
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
+from app.agents.ports import RateLimitPause
+from app.harness.memory import RunMemory
+from app.infrastructure.persistence.unit_of_work import UnitOfWork
+from app.harness.runner import AgentRunner
 from app.workers.run_worker import RunWorker
 
 
@@ -50,3 +55,44 @@ def test_concurrent_start_for_same_review_is_serialized(api_client, review_seed)
         api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()["status"]
         == "queued"
     )
+
+
+def test_rate_limit_cools_down_and_continues_same_checkpoint(
+    api_client, review_seed, monkeypatch
+):
+    review = review_seed(False)
+    run_id = api_client.post(
+        f"/api/v1/reviews/{review['id']}/runs"
+    ).json()["run_id"]
+    original_turn = AgentRunner.run_turn
+    attempts = []
+
+    def limited_once(self, state):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RateLimitPause(60)
+        return original_turn(self, state)
+
+    monkeypatch.setattr(AgentRunner, "run_turn", limited_once)
+    worker = RunWorker()
+    assert worker.tick()
+    paused = api_client.get(f"/api/v1/runs/{run_id}").json()
+    assert paused["status"] == "running"
+    assert paused["step_count"] == 0
+    assert paused["error_code"] is None
+    assert paused["cooldown_until"] is not None
+    assert not worker.tick()
+    assert len(attempts) == 1
+    worker.recover_interrupted()
+    assert api_client.get(f"/api/v1/runs/{run_id}").json()["status"] == "running"
+
+    with UnitOfWork() as unit:
+        state = RunMemory(unit.session).load(run_id)
+        state.cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        RunMemory(unit.session).save(state)
+    assert worker.tick()
+    resumed = api_client.get(f"/api/v1/runs/{run_id}").json()
+    assert resumed["step_count"] == 1
+    assert resumed["cooldown_until"] is None
+    events = api_client.get(f"/api/v1/runs/{run_id}/events").json()["items"]
+    assert any(item["action"] == "provider_cooldown" for item in events)

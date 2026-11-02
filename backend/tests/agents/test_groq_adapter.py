@@ -6,7 +6,7 @@ import httpx
 import pytest
 from groq import APIStatusError, RateLimitError
 
-from app.agents.ports import LLMFailure
+from app.agents.ports import LLMFailure, RateLimitPause
 from app.agents.schemas import AgentAction
 from app.infrastructure.groq.client import GroqClient
 
@@ -86,10 +86,11 @@ def test_retry_after_beyond_budget_fails_without_waiting():
         )
 
     adapter = GroqClient("key", "model", completion=completion, sleep=waits.append)
-    with pytest.raises(LLMFailure, match="rate_limited"):
+    with pytest.raises(RateLimitPause, match="rate_limited") as error:
         adapter.generate_json([], AgentAction)
     assert len(calls) == 1
     assert waits == []
+    assert error.value.retry_after_seconds == 300
 
 
 def test_schema_repair_shares_the_same_five_minute_wait_budget():

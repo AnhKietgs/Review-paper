@@ -16,7 +16,7 @@ def eligible_actions(state: RunState) -> list[str]:
         return ["next_batch"]
     if set(state.scope.reference_versions) - set(state.reference_assessments):
         return ["compare"]
-    return ["finish"]
+    return ["audit_omission" if state.omission_audits else "finish"]
 
 
 class Supervisor:

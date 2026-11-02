@@ -275,7 +275,18 @@ class ReviewService:
         return self._read(row)
 
     def delete(self, review_id: str) -> None:
-        """Soft delete one revision."""
+        """Soft delete one revision and cancel unfinished work for it."""
+        self.session.execute(text("BEGIN IMMEDIATE"))
         row = self._required(review_id)
-        self._ensure_idle(review_id)
-        row.deleted_at = datetime.now(timezone.utc)
+        deleted_at = datetime.now(timezone.utc)
+        active_runs = self.session.scalars(
+            select(RunRow).where(
+                RunRow.review_id == review_id,
+                RunRow.status.in_(["queued", "running", "interrupted"]),
+            )
+        )
+        for run in active_runs:
+            run.status = "cancelled"
+            run.error_code = "cancelled_by_user"
+            run.finished_at = deleted_at
+        row.deleted_at = deleted_at

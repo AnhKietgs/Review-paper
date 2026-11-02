@@ -33,5 +33,5 @@ def get_events(
 
 @router.post("/runs/{run_id}/resume", status_code=202, response_model=RunAccepted)
 def resume_run(run_id: str, unit: UnitOfWork = Depends(get_uow)):
-    """Resume an interrupted checkpoint explicitly."""
+    """Resume an interrupted or formerly rate limited checkpoint."""
     return RunService(unit.session).resume(run_id)

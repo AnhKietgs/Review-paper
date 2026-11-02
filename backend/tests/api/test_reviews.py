@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.infrastructure.persistence.database import get_engine
 from app.infrastructure.persistence.orm_models import Base
 from app.main import app
+from app.workers.run_worker import RunWorker
 
 
 @pytest.fixture
@@ -211,3 +212,24 @@ def test_concurrent_revision_forks_get_distinct_monotonic_numbers(client: TestCl
         responses = list(pool.map(lambda _: client.post(path), range(2)))
     assert [response.status_code for response in responses] == [201, 201]
     assert sorted(response.json()["revision"] for response in responses) == [2, 3]
+
+
+def test_delete_unfinished_review_cancels_its_active_run(client: TestClient):
+    main_id = paper(client, "unfinished review")
+    draft = client.post(
+        "/api/v1/reviews",
+        json={"paper_id": main_id, "rubric_id": rubric(client)},
+    ).json()
+    accepted = client.post(f"/api/v1/reviews/{draft['id']}/runs").json()
+    worker = RunWorker()
+    assert worker.tick()
+    assert client.get(f"/api/v1/runs/{accepted['run_id']}").json()["status"] == "running"
+
+    deleted = client.delete(f"/api/v1/reviews/{accepted['review_id']}")
+
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/reviews/{accepted['review_id']}").status_code == 404
+    run = client.get(f"/api/v1/runs/{accepted['run_id']}").json()
+    assert run["status"] == "cancelled"
+    assert run["error_code"] == "cancelled_by_user"
+    assert worker.tick() is False

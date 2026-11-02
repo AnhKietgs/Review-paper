@@ -1,9 +1,11 @@
 """Bounded loop owned by the harness, with one worker per turn."""
 
+import re
 from uuid import uuid4
 
 from app.agents.graph_factory import AgentFactory
-from app.agents.schemas import FindingDraft
+from app.agents.ports import LLMFailure
+from app.agents.schemas import AgentAction, FindingDraft
 from app.agents.supervisor import Supervisor, eligible_actions
 from app.harness.context import ContextBuilder
 from app.harness.document_queue import DocumentQueue
@@ -89,6 +91,33 @@ class AgentRunner:
             finding = FindingDraft.model_validate(draft).model_dump(mode="json")
             # Model-generated IDs must never address an existing persisted finding.
             finding["id"] = str(uuid4())
+            if finding["kind"] == "limitation":
+                omission = re.match(
+                    r"^(?:bài báo|nghiên cứu)\s+(?:không|chưa)\s+"
+                    r"(?:cung cấp|nêu|báo cáo|trình bày)\s+(.+)$",
+                    finding["claim"], re.IGNORECASE,
+                )
+                if omission:
+                    finding["kind"] = "omission"
+                    finding["claim"] = omission.group(1).rstrip(". ")
+            if finding["kind"] == "omission":
+                finding["evidence"] = []
+                if not any(
+                    item["finding"]["claim"].casefold()
+                    == finding["claim"].casefold()
+                    and item["finding"]["criterion_code"]
+                    == finding["criterion_code"]
+                    for item in state.omission_audits
+                ):
+                    state.omission_audits.append(
+                        {"finding": finding, "checked": 0, "ambiguous": False}
+                    )
+                    self._event(
+                        state, "harness", "omission_deferred",
+                        "Waiting for full main-paper coverage",
+                        finding_id=finding["id"], topic=finding["claim"],
+                    )
+                continue
             result = self.output_gate.validate(finding, state.scope)
             self._event(
                 state,
@@ -307,6 +336,8 @@ class AgentRunner:
             FindingDraft.model_validate(item).model_dump(mode="json")
             for item in output["findings"]
             if item["kind"] == original["kind"]
+            and item["criterion_code"] == original["criterion_code"]
+            and all(source["chunk_id"] in ids for source in item["evidence"])
         ]
         if not candidates:
             self._event(state, role, "repair_unresolved", "No supported revision")
@@ -332,6 +363,149 @@ class AgentRunner:
             state, role, "finding_repaired", "Revision sent to Evidence Verifier",
             original_finding_id=original["id"], finding_id=candidate["id"],
         )
+
+    def _finish_omission(self, state: RunState, audit: dict) -> None:
+        """Publish only a scoped result after the complete source scan."""
+        finding = audit["finding"]
+        status = "uncertain" if audit["ambiguous"] else "not_reported"
+        topic = finding["claim"]
+        if audit["ambiguous"]:
+            finding["claim"] = (
+                f"Chưa thể kết luận về {topic} trong văn bản trích xuất "
+                f"v{state.scope.main_version} sau khi rà soát "
+                f"{audit['checked']} đoạn."
+            )
+        else:
+            finding["claim"] = (
+                f"Không tìm thấy thông tin về {topic} trong văn bản trích xuất "
+                f"v{state.scope.main_version} sau khi rà soát "
+                f"{audit['checked']} đoạn."
+            )
+        finding["status"] = status
+        finding["verdict"] = (
+            "Một hoặc nhiều đoạn không đủ rõ để kết luận."
+            if audit["ambiguous"]
+            else "Đã rà soát toàn bộ văn bản trích xuất; "
+            "đây là giới hạn báo cáo thông tin, không chứng minh sự vắng mặt "
+            "ở các nguồn khác."
+        )
+        state.findings.append(finding)
+        self._event(
+            state, "harness", "omission_completed", status,
+            finding_id=finding["id"], checked=audit["checked"],
+        )
+
+    def _audit_omission(self, state: RunState, gateway: ToolGateway) -> None:
+        """Audit several omission topics against one bounded source group."""
+        if state.remaining_chunk_ids or state.current_batch_ids:
+            raise ValueError("Omission audit requires full document coverage")
+        cursor = state.omission_audits[0]["checked"]
+        audits = [
+            item for item in state.omission_audits
+            if item["checked"] == cursor
+        ][:10]
+        ids = state.processed_chunk_ids[cursor:cursor + 2]
+        if not ids:
+            for audit in audits:
+                state.omission_audits.remove(audit)
+                self._event(
+                    state, "harness", "omission_unresolved",
+                    "No main-paper chunks available for audit",
+                    finding_id=audit["finding"]["id"],
+                )
+            return
+        context = self._context(state, gateway, "evidence_verifier", ids)
+        context["pending_findings"] = [item["finding"] for item in audits]
+        context["omission_audit"] = True
+        try:
+            output = self._invoke(state, "evidence_verifier", context)
+        except LLMFailure as exc:
+            if str(exc) not in {"invalid_model_output", "rate_limited"}:
+                raise
+            for audit in audits:
+                state.omission_audits.remove(audit)
+                finding = audit["finding"]
+                finding["claim"] = (
+                    f"Chưa thể kết luận về {finding['claim']} trong văn bản "
+                    f"trích xuất v{state.scope.main_version}."
+                )
+                finding["status"] = "uncertain"
+                finding["verdict"] = (
+                    "Lượt kiểm tra toàn bài chưa hoàn tất do lỗi đầu ra "
+                    f"Evidence Verifier: {exc}."
+                )
+                state.findings.append(finding)
+                self._event(
+                    state, "evidence_verifier", "omission_audit_unavailable",
+                    str(exc), finding_id=finding["id"], source_ids=ids,
+                )
+            return
+        assessments = {
+            item["finding_id"]: item for item in output["assessments"]
+        }
+        for audit in audits:
+            finding = audit["finding"]
+            assessment = assessments.get(
+                finding["id"],
+                {"status": "uncertain", "reason": "Verifier omitted audit result"},
+            )
+            audit["checked"] += len(ids)
+            self._event(
+                state, "evidence_verifier", "omission_audited",
+                assessment["reason"], finding_id=finding["id"],
+                source_ids=ids, result=assessment["status"],
+            )
+            if assessment["status"] == "supported":
+                state.omission_audits.remove(audit)
+                self._event(
+                    state, "harness", "omission_refuted",
+                    "The detail was found in the extracted paper",
+                    finding_id=finding["id"], source_ids=ids,
+                )
+                continue
+            if assessment["status"] == "uncertain":
+                audit["ambiguous"] = True
+            if audit["checked"] == len(state.processed_chunk_ids):
+                state.omission_audits.remove(audit)
+                self._finish_omission(state, audit)
+
+    def _supervisor_action(self, state: RunState) -> AgentAction:
+        """Use the sole legal action when model output cannot be parsed."""
+        self._event(
+            state, "supervisor", "agent_started", model=self._model_id("supervisor")
+        )
+        state.call_counts["supervisor"] = state.call_counts.get("supervisor", 0) + 1
+        try:
+            action = Supervisor(self._graph("supervisor")).decide(state)
+        except LLMFailure as exc:
+            if str(exc) not in {"invalid_model_output", "rate_limited"}:
+                raise
+            selected = eligible_actions(state)
+            if len(selected) != 1:
+                raise
+            reference_id = None
+            if selected[0] == "compare":
+                reference_id = sorted(
+                    set(state.scope.reference_versions)
+                    - set(state.reference_assessments)
+                )[0]
+            action = AgentAction(
+                action=selected[0],
+                reason="Chọn hành động hợp lệ duy nhất sau lỗi đầu ra Supervisor",
+                reference_paper_id=reference_id,
+            )
+            self._event(
+                state, "supervisor", "supervisor_fallback",
+                str(exc), selected_action=action.action,
+            )
+        self._event(
+            state,
+            "supervisor",
+            "decision",
+            action.reason,
+            selected_action=action.action,
+        )
+        return action
 
     def run_turn(self, state: RunState) -> RunState:
         """Execute one supervisor turn and at most one eligible worker."""
@@ -364,18 +538,7 @@ class AgentRunner:
                 self._event(
                     state, "evidence_verifier", "agent_skipped", "No pending findings"
                 )
-        self._event(
-            state, "supervisor", "agent_started", model=self._model_id("supervisor")
-        )
-        state.call_counts["supervisor"] = state.call_counts.get("supervisor", 0) + 1
-        action = Supervisor(self._graph("supervisor")).decide(state)
-        self._event(
-            state,
-            "supervisor",
-            "decision",
-            action.reason,
-            selected_action=action.action,
-        )
+        action = self._supervisor_action(state)
         legal = action.action in eligible_actions(state)
         if action.action == "compare":
             legal = legal and action.reference_paper_id in (
@@ -426,6 +589,8 @@ class AgentRunner:
                 self._verify(state, gateway)
             elif action.action == "repair":
                 self._repair(state, gateway)
+            elif action.action == "audit_omission":
+                self._audit_omission(state, gateway)
         self._event(
             state,
             "memory",

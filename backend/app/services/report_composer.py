@@ -54,7 +54,14 @@ class ReportComposer:
 
     def render_markdown(self, review: ReviewRead) -> str:
         """Render stable sections and evidence in deterministic order."""
-        claims = [item for item in review.findings if item.kind != "question"]
+        claims = [
+            item for item in review.findings
+            if item.kind not in {"question", "omission"}
+        ]
+        omissions = sorted(
+            (item for item in review.findings if item.kind == "omission"),
+            key=lambda finding: (finding.criterion_code, finding.id),
+        )
         questions = sorted(
             (
                 item for item in review.findings
@@ -112,6 +119,23 @@ class ReportComposer:
             lines += ["Chưa có câu hỏi có căn cứ nguồn cho mục này.", ""]
         for question in questions:
             lines += self._question_lines(question)
+        if omissions:
+            lines += [
+                "## Thông tin chưa tìm thấy trong toàn văn bản trích xuất", "",
+                "Các mục dưới đây được rà soát trên văn bản trích xuất của "
+                f"paper `{review.paper_id}` v{review.paper_content_version}. "
+                "Kết quả không chứng minh tác giả chưa từng nêu thông tin "
+                "ở nguồn khác.", "",
+            ]
+            for finding in omissions:
+                lines += [
+                    f"### {finding.claim}", "",
+                    "Trạng thái rà soát: "
+                    + ("không tìm thấy trong bản trích xuất"
+                       if finding.status == "not_reported"
+                       else "chưa thể kết luận"),
+                    "", finding.verdict, "",
+                ]
         unverified = sorted(
             (finding for finding in claims if finding.status != "supported"),
             key=lambda finding: (finding.criterion_code, finding.id),

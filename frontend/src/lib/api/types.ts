@@ -27,7 +27,8 @@ export interface AcceptedRun { run_id: string; review_id: string; status: string
 export interface Run {
   id: string; review_id: string; status: string; step_count: number;
   batch_count: number; processed: number; remaining: number; max_batches: number;
-  max_turns: number; error_code: string | null; call_counts: Record<string, number>;
+  max_turns: number; error_code: string | null; cooldown_until: string | null;
+  call_counts: Record<string, number>;
   usage: { calls?: number; tokens?: number };
   reference_assessments: Record<string, { status: string; reason: string }>;
 }

@@ -90,7 +90,12 @@ class RunService:
             for finding in revision.findings:
                 draft = finding.model_dump(exclude={"status", "verdict"})
                 if finding.status == "pending":
-                    state.pending_findings.append(draft)
+                    if finding.kind == "omission":
+                        state.omission_audits.append(
+                            {"finding": draft, "checked": 0, "ambiguous": False}
+                        )
+                    else:
+                        state.pending_findings.append(draft)
                 else:
                     state.findings.append(finding.model_dump())
             for paper_id in scope.reference_versions:
@@ -132,6 +137,7 @@ class RunService:
             "step_count": row.step_count,
             "usage": row.usage,
             "error_code": row.error_code,
+            "cooldown_until": state.cooldown_until,
             "batch_count": state.batch_count,
             "processed": len(state.processed_chunk_ids),
             "remaining": len(state.remaining_chunk_ids),
@@ -153,11 +159,17 @@ class RunService:
         row = self.repository.get(run_id)
         if row is None:
             raise NotFoundError("run_missing", "Run not found")
-        if row.status != "interrupted":
-            raise ConflictError("not_resumable", "Only an interrupted run can resume")
+        if row.status != "interrupted" and not (
+            row.status == "failed" and row.error_code == "rate_limited"
+        ):
+            raise ConflictError("not_resumable", "Run cannot resume")
         row.status = "queued"
+        row.error_code = None
+        row.finished_at = None
         state = RunMemory(self.session).load(run_id)
         state.status = "running"
+        state.error_code = None
+        state.cooldown_until = None
         RunMemory(self.session).save(state)
         RunEventRecorder(self.session).append(
             run_id,

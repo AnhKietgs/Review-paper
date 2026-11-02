@@ -1,11 +1,11 @@
 """One background harness turn at a time, checkpointed atomically."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Event, Lock, Thread
 
 from sqlalchemy import select, text
 
-from app.agents.ports import LLMFailure
+from app.agents.ports import LLMFailure, RateLimitPause
 from app.core.config import Settings
 from app.harness.events import RunEventInput, RunEventRecorder
 from app.harness.memory import RunMemory
@@ -67,10 +67,29 @@ class RunWorker:
     @staticmethod
     def _freeze_review(session, review: ReviewRow, state) -> None:
         """Save a report with unsupported or invalid evidence clearly labeled."""
-        gate = OutputGate(SqlSourceCatalog(session))
+        catalog = SqlSourceCatalog(session)
+        gate = OutputGate(catalog)
+        main_chunk_ids = {
+            item["id"] for item in catalog.chunks(
+                state.scope.main_paper_id, state.scope.main_version
+            )
+        }
+        full_coverage = (
+            bool(main_chunk_ids)
+            and main_chunk_ids == set(state.processed_chunk_ids)
+            and not state.remaining_chunk_ids
+            and not state.current_batch_ids
+        )
         for finding in session.scalars(
             select(FindingRow).where(FindingRow.review_id == review.id)
         ):
+            if finding.kind == "omission" and finding.status in {
+                "not_reported", "uncertain",
+            }:
+                if not full_coverage:
+                    finding.status = "uncertain"
+                    finding.verdict = "Chưa đủ phạm vi đọc để kết luận."
+                continue
             draft = {
                 key: getattr(finding, key)
                 for key in (
@@ -107,6 +126,9 @@ class RunWorker:
             for row in unit.session.scalars(
                 select(RunRow).where(RunRow.status == "running")
             ):
+                state = RunMemory(unit.session).load(row.id)
+                if state.cooldown_until is not None:
+                    continue
                 row.status = "interrupted"
                 RunEventRecorder(unit.session).append(
                     row.id,
@@ -139,6 +161,13 @@ class RunWorker:
         with UnitOfWork() as unit:
             unit.session.execute(text("BEGIN IMMEDIATE"))
             row = unit.session.scalar(select(RunRow).where(RunRow.status == "running"))
+            if row is not None:
+                state = RunMemory(unit.session).load(row.id)
+                if (
+                    state.cooldown_until is not None
+                    and state.cooldown_until > datetime.now(timezone.utc)
+                ):
+                    return None
             if row is None:
                 row = unit.session.scalar(
                     select(RunRow)
@@ -237,6 +266,7 @@ class RunWorker:
                 return False
             with UnitOfWork() as unit:
                 state = RunMemory(unit.session).load(run_id)
+                state.cooldown_until = None
                 original_steps = state.turn_count
                 catalog = SnapshotCatalog(SqlSourceCatalog(unit.session), state.scope)
             original = state.model_copy(deep=True)
@@ -293,6 +323,26 @@ class RunWorker:
                         }
                     )
                 state = AgentRunner(llm, catalog, memory, events).run_turn(state)
+            except RateLimitPause as exc:
+                state = original
+                state.cooldown_until = datetime.now(timezone.utc) + timedelta(
+                    seconds=exc.retry_after_seconds
+                )
+                events.append(
+                    run_id,
+                    RunEventInput(
+                        agent="harness",
+                        action="provider_cooldown",
+                        output_summary=(
+                            f"Groq limit reached; resuming in "
+                            f"{exc.retry_after_seconds}s"
+                        ),
+                        payload={
+                            "retry_after_seconds": exc.retry_after_seconds,
+                            "cooldown_until": state.cooldown_until.isoformat(),
+                        },
+                    ),
+                )
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 # Worker boundary: isolate provider/internal failures from HTTP threads.
                 state = original

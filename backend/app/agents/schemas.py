@@ -29,7 +29,9 @@ class FindingDraft(StrictModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     criterion_code: str
     claim: str = Field(min_length=1)
-    kind: Literal["analysis", "strength", "limitation", "comparison", "question"]
+    kind: Literal[
+        "analysis", "strength", "limitation", "comparison", "question", "omission"
+    ]
     evidence: list[EvidenceReference]
     compared_paper_ids: list[str] = Field(default_factory=list)
 
@@ -37,7 +39,10 @@ class FindingDraft(StrictModel):
 class AgentAction(StrictModel):
     """Supervisor requests exactly one next action."""
 
-    action: Literal["analyze", "compare", "verify", "repair", "next_batch", "finish"]
+    action: Literal[
+        "analyze", "compare", "verify", "repair", "next_batch",
+        "audit_omission", "finish",
+    ]
     reason: str
     reference_paper_id: str | None = None
 

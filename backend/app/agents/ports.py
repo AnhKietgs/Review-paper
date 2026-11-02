@@ -20,3 +20,11 @@ class LLMPort(Protocol):
 
 class LLMFailure(RuntimeError):
     """Sanitized provider failure safe to expose to a run trace."""
+
+
+class RateLimitPause(LLMFailure):
+    """Retryable provider limit with a sanitized delay in seconds."""
+
+    def __init__(self, retry_after_seconds: int):
+        super().__init__("rate_limited")
+        self.retry_after_seconds = retry_after_seconds
