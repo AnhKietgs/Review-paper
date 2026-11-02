@@ -87,6 +87,9 @@ a.button:hover { color: white; text-decoration: none; }
 .finding label { margin-top: 10px; }
 .finding textarea { min-height: 110px; background: white; }
 .finding-meta { color: var(--muted); font-size: .82rem; margin: 8px 0 12px; overflow-wrap: anywhere; }
+.author-questions { border-top: 1px solid var(--line); margin-top: 26px; padding-top: 22px; }
+.author-questions h2 { margin-bottom: 6px; }
+.status.grounded { background: #e4f0e8; color: #286449; }
 .evidence-item { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
 .evidence-item blockquote { margin: 0 0 4px; padding: 7px 12px; background: #f0f5f0; border-left: 3px solid #a7c6ad; color: #344f43; font-size: .88rem; line-height: 1.55; overflow-wrap: anywhere; }
 .source-link { font-size: .86rem; }

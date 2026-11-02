@@ -5,7 +5,7 @@ from app.harness.memory import RunMemory
 from app.harness.runner import AgentRunner
 from app.harness.state import RunScope, RunState
 from app.infrastructure.groq.fixture_client import FixtureClient
-from app.agents.schemas import VerificationOutput
+from app.agents.schemas import ScientificOutput, VerificationOutput
 
 
 class Catalog:
@@ -169,3 +169,66 @@ def test_invalid_provenance_stays_unverified_after_bounded_repair():
     assert state.findings[0]["status"] == "unsupported"
     assert state.findings[0]["evidence"] == []
     assert any(item["action"] == "repair_unresolved" for item in events.items)
+
+
+def test_grounded_question_has_distinct_status_and_source():
+    class QuestionClient(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            if schema is ScientificOutput:
+                result.findings[0].kind = "question"
+                result.findings[0].claim = "How were the 24 participants recruited?"
+            return result
+
+    state, _ = execute(run_state(), QuestionClient())
+    assert state.status == "completed"
+    assert len(state.findings) == 1
+    assert state.findings[0]["status"] == "grounded"
+    assert state.findings[0]["evidence"][0]["quote"] == (
+        "The sample contains 24 participants."
+    )
+
+
+def test_question_without_source_is_omitted_after_bounded_repair():
+    class StrictCatalog(Catalog):
+        def chunk(self, chunk_id):
+            if chunk_id == "outside-run":
+                return None
+            return super().chunk(chunk_id)
+
+    class BadQuestionClient(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            if schema is ScientificOutput:
+                result.findings[0].kind = "question"
+                result.findings[0].claim = "How were the 24 participants recruited?"
+            return result
+
+    state, events = execute(
+        run_state(), BadQuestionClient(bad_source=True), StrictCatalog()
+    )
+    assert state.status == "completed"
+    assert state.repair_count == 1
+    assert state.findings == []
+    assert any(item["action"] == "repair_unresolved" for item in events.items)
+    assert any(item["action"] == "question_omitted" for item in events.items)
+
+
+def test_question_rejected_by_verifier_is_omitted_after_one_repair():
+    class RejectedQuestionClient(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            if schema is ScientificOutput:
+                result.findings[0].kind = "question"
+                result.findings[0].claim = "How were participants recruited?"
+            if schema is VerificationOutput:
+                for assessment in result.assessments:
+                    assessment.status = "unsupported"
+                    assessment.reason = "Passage does not ground this question"
+            return result
+
+    state, events = execute(run_state(), RejectedQuestionClient())
+    assert state.status == "completed"
+    assert state.repair_count == 1
+    assert state.findings == []
+    assert any(item["action"] == "question_omitted" for item in events.items)

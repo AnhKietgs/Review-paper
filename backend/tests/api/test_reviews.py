@@ -111,6 +111,57 @@ def test_review_crud_and_revision_snapshot(client: TestClient):
     assert client.get(f"/api/v1/reviews/{review_id}").status_code == 404
 
 
+def test_findings_follow_frozen_rubric_criterion_order(client: TestClient):
+    main_id = paper(client, "ordered review")
+    created_rubric = client.post(
+        "/api/v1/rubrics",
+        json={
+            "name": "Ordered criteria",
+            "criteria": [
+                {"code": "objective", "question": "What is the objective?"},
+                {"code": "method", "question": "Is the method sound?"},
+                {"code": "limitations", "question": "What are the limitations?"},
+            ],
+        },
+    ).json()
+    review = client.post(
+        "/api/v1/reviews",
+        json={"paper_id": main_id, "rubric_id": created_rubric["id"]},
+    ).json()
+    updated = client.patch(
+        f"/api/v1/reviews/{review['id']}",
+        json={
+            "findings": [
+                {"criterion_code": "limitations", "claim": "Limitation"},
+                {"criterion_code": "method", "claim": "Method A"},
+                {"criterion_code": "objective", "claim": "Objective"},
+                {"criterion_code": "method", "claim": "Method B"},
+                {"criterion_code": "other", "claim": "Other note"},
+            ]
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert [item["claim"] for item in updated.json()["findings"]] == [
+        "Objective", "Method A", "Method B", "Limitation", "Other note"
+    ]
+
+    newer = client.patch(
+        f"/api/v1/rubrics/{created_rubric['id']}",
+        json={
+            "criteria": [
+                {"code": "limitations", "question": "Limitations?"},
+                {"code": "method", "question": "Method?"},
+                {"code": "objective", "question": "Objective?"},
+            ]
+        },
+    )
+    assert newer.status_code == 200, newer.text
+    fetched = client.get(f"/api/v1/reviews/{review['id']}")
+    assert [item["claim"] for item in fetched.json()["findings"]] == [
+        "Objective", "Method A", "Method B", "Limitation", "Other note"
+    ]
+
+
 def test_invalid_reference_selection(client: TestClient):
     main_id = paper(client, "main")
     ref_id = paper(client, "reference")

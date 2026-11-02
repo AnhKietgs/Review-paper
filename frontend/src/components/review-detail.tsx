@@ -107,10 +107,12 @@ export default function ReviewDetail() {
   }
 
   const locked = ["completed", "approved", "queued", "running", "interrupted"].includes(review.status);
-  const statusCount = (status: string) => review.findings.filter((finding) => finding.status === status).length;
+  const numberedFindings = review.findings.map((finding, index) => ({ finding, index }));
+  const claimFindings = numberedFindings.filter(({ finding }) => finding.kind !== "question");
+  const questions = numberedFindings.filter(({ finding }) => finding.kind === "question" && finding.status === "grounded" && finding.evidence.length > 0);
+  const statusCount = (status: string) => claimFindings.filter(({ finding }) => finding.status === status).length;
   const uncertainCount = statusCount("uncertain") + statusCount("needs_human_review");
-  const visibleFindings = review.findings
-    .map((finding, index) => ({ finding, index }))
+  const visibleFindings = claimFindings
     .filter(({ finding }) => filter === "all" || finding.status === filter || (filter === "uncertain" && finding.status === "needs_human_review"));
 
   return <>
@@ -141,7 +143,7 @@ export default function ReviewDetail() {
     </section>
 
     <section className="review-summary" aria-label="Tổng quan nhận xét">
-      <div className="summary-item"><strong>{review.findings.length}</strong><span>Tổng nhận xét</span></div>
+      <div className="summary-item"><strong>{claimFindings.length}</strong><span>Tổng nhận xét</span></div>
       <div className="summary-item"><strong>{statusCount("supported")}</strong><span>Có nguồn hỗ trợ</span></div>
       <div className="summary-item"><strong>{statusCount("unsupported")}</strong><span>Thiếu bằng chứng</span></div>
       <div className="summary-item"><strong>{statusCount("pending") + uncertainCount}</strong><span>Chưa chắc chắn / chờ kiểm tra</span></div>
@@ -153,9 +155,9 @@ export default function ReviewDetail() {
           <div>
             <h2 id="review-content-title">Nội dung đánh giá</h2>
           </div>
-          {review.findings.length > 0 && <label className="finding-filter">Lọc nhận xét
+          {claimFindings.length > 0 && <label className="finding-filter">Lọc nhận xét
             <select value={filter} onChange={(event) => setFilter(event.target.value as FindingFilter)}>
-              <option value="all">Tất cả ({review.findings.length})</option>
+              <option value="all">Tất cả ({claimFindings.length})</option>
               <option value="unsupported">Thiếu bằng chứng ({statusCount("unsupported")})</option>
               <option value="uncertain">Chưa chắc chắn ({uncertainCount})</option>
               <option value="pending">Chờ kiểm chứng ({statusCount("pending")})</option>
@@ -170,8 +172,8 @@ export default function ReviewDetail() {
             setDirty(true);
           }} />
         </label>
-        {!review.findings.length && <p className="empty">Chạy Paper Review để tạo nhận xét và kiểm tra bằng chứng.</p>}
-        {!!review.findings.length && !visibleFindings.length && <p className="empty">Không có nhận xét ở trạng thái này. Hãy chọn bộ lọc khác.</p>}
+        {!claimFindings.length && <p className="empty">Chưa có nhận xét khoa học. Chạy Paper Review để tạo nhận xét và kiểm tra bằng chứng.</p>}
+        {!!claimFindings.length && !visibleFindings.length && <p className="empty">Không có nhận xét ở trạng thái này. Hãy chọn bộ lọc khác.</p>}
 
         {visibleFindings.map(({ finding, index }) => <article className="finding" key={finding.id}>
           <div className="finding-heading">
@@ -192,6 +194,31 @@ export default function ReviewDetail() {
             </button>
           </div>)}
         </article>)}
+
+        <section className="author-questions" aria-labelledby="author-questions-title">
+          <h2 id="author-questions-title">Câu hỏi dành cho tác giả ({questions.length})</h2>
+          <p className="helper-text">Mỗi câu hỏi dưới đây có đoạn nguồn xác định cơ sở để hỏi. Đây không phải kết luận khoa học.</p>
+          {!questions.length && <p className="empty">Chưa có câu hỏi nào có căn cứ nguồn.</p>}
+          {questions.map(({ finding, index }, questionIndex) => <article className="finding" key={finding.id}>
+            <div className="finding-heading">
+              <div><span className="finding-index">CÂU HỎI {questionIndex + 1}</span><h3>{finding.criterion_code.replaceAll("_", " ")}</h3></div>
+              <span className="status grounded">Có căn cứ nguồn</span>
+            </div>
+            <label>Câu hỏi {questionIndex + 1}
+              <textarea disabled={locked} value={finding.claim} onChange={(event) => {
+                setReview({ ...review, findings: review.findings.map((item, itemIndex) => itemIndex === index ? { ...item, claim: event.target.value } : item) });
+                setDirty(true);
+              }} />
+            </label>
+            <p className="finding-meta">Cơ sở đặt câu hỏi · {finding.verdict}</p>
+            {finding.evidence.map((evidence, evidenceIndex) => <div className="evidence-item" key={`${evidence.chunk_id}-${evidenceIndex}`}>
+              <blockquote>{evidence.quote}</blockquote>
+              <button className="text-button source-link" disabled={busy} onClick={() => openSource(evidence)}>
+                Xem nguồn {evidenceIndex + 1} · {evidence.locator_type} {evidence.locator_value} · v{evidence.content_version} ↗
+              </button>
+            </div>)}
+          </article>)}
+        </section>
 
         {!locked && <div className="actions review-final-actions">
           <button className="secondary" disabled={busy || !dirty} onClick={save}>Lưu chỉnh sửa</button>

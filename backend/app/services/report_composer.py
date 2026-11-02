@@ -10,7 +10,6 @@ SECTIONS = [
     ("Điểm mạnh", {"strength", "strengths"}),
     ("Hạn chế", {"limitation", "limitations", "limits"}),
     ("So sánh với công trình được chọn", {"comparison"}),
-    ("Câu hỏi cho tác giả", {"question", "questions"}),
 ]
 
 
@@ -40,8 +39,30 @@ class ReportComposer:
             ]
         return lines
 
+    @staticmethod
+    def _question_lines(finding) -> list[str]:
+        lines = [f"### {finding.claim}", "", "Cơ sở đặt câu hỏi:", ""]
+        for item in finding.evidence:
+            place = "PDF trang" if item["locator_type"] == "pdf_page" else "DOCX đoạn"
+            lines += [
+                f"> {item['quote']}", "",
+                f"Nguồn: `{item['paper_id']}` · v{item['content_version']} · "
+                f"{place} {item['locator_value']} · chunk `{item['chunk_id']}`.",
+                "",
+            ]
+        return lines
+
     def render_markdown(self, review: ReviewRead) -> str:
         """Render stable sections and evidence in deterministic order."""
+        claims = [item for item in review.findings if item.kind != "question"]
+        questions = sorted(
+            (
+                item for item in review.findings
+                if item.kind == "question" and item.status == "grounded"
+                and item.evidence
+            ),
+            key=lambda finding: (finding.criterion_code, finding.id),
+        )
         lines = [
             "# Paper Review",
             "",
@@ -54,9 +75,9 @@ class ReportComposer:
             f"Trạng thái báo cáo: **{review.status}**",
             "",
             f"Nhận xét có bằng chứng hỗ trợ: "
-            f"**{sum(item.status == 'supported' for item in review.findings)}**; "
+            f"**{sum(item.status == 'supported' for item in claims)}**; "
             f"chưa xác minh: "
-            f"**{sum(item.status != 'supported' for item in review.findings)}**.",
+            f"**{sum(item.status != 'supported' for item in claims)}**.",
             "",
         ]
         if review.reviewer_edits.get("summary"):
@@ -67,7 +88,7 @@ class ReportComposer:
                 "",
             ]
         remaining = sorted(
-            (finding for finding in review.findings if finding.status == "supported"),
+            (finding for finding in claims if finding.status == "supported"),
             key=lambda finding: (finding.criterion_code, finding.id),
         )
         for title, keys in SECTIONS:
@@ -86,8 +107,13 @@ class ReportComposer:
             lines += ["## Nhận xét bổ sung", ""]
             for finding in remaining:
                 lines += self._finding_lines(finding)
+        lines += ["## Câu hỏi cho tác giả", ""]
+        if not questions:
+            lines += ["Chưa có câu hỏi có căn cứ nguồn cho mục này.", ""]
+        for question in questions:
+            lines += self._question_lines(question)
         unverified = sorted(
-            (finding for finding in review.findings if finding.status != "supported"),
+            (finding for finding in claims if finding.status != "supported"),
             key=lambda finding: (finding.criterion_code, finding.id),
         )
         if unverified:

@@ -246,6 +246,8 @@ class AgentRunner:
                 },
             )
             status = assessment["status"] if result.passed else "unsupported"
+            if finding["kind"] == "question" and status == "supported":
+                status = "grounded"
             state.findings.append(
                 {
                     **finding,
@@ -254,7 +256,7 @@ class AgentRunner:
                     "verdict": assessment["reason"],
                 }
             )
-            if status != "supported":
+            if status not in {"supported", "grounded"}:
                 self._queue_repair(
                     state, finding,
                     "related_work" if finding["kind"] == "comparison"
@@ -396,6 +398,20 @@ class AgentRunner:
             state.batch_count += 1
             self._event(state, "harness", "batch_selected", source_ids=batch.chunk_ids)
         elif action.action == "finish":
+            unresolved_questions = [
+                item for item in state.findings
+                if item["kind"] == "question" and item["status"] != "grounded"
+            ]
+            for question in unresolved_questions:
+                self._event(
+                    state, "harness", "question_omitted",
+                    "Question lacks verified source support",
+                    finding_id=question["id"], reason=question["verdict"],
+                )
+            state.findings = [
+                item for item in state.findings
+                if item["kind"] != "question" or item["status"] == "grounded"
+            ]
             state.status = "completed"
             self._event(
                 state, "harness", "run_completed", "All required work accounted for"

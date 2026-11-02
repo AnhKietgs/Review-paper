@@ -44,6 +44,16 @@ class ReviewService:
         return row
 
     def _read(self, row: ReviewRow) -> ReviewRead:
+        criterion_order = {
+            item.code: item.order_index
+            for item in self.rubrics.criteria(row.rubric_id, row.rubric_version)
+        }
+        findings = sorted(
+            self.repository.findings(row.id),
+            key=lambda item: criterion_order.get(
+                item.criterion_code, len(criterion_order)
+            ),
+        )
         return ReviewRead(
             id=row.id,
             paper_id=row.paper_id,
@@ -74,7 +84,7 @@ class ReviewService:
                     status=item.status,
                     verdict=item.verdict,
                 )
-                for item in self.repository.findings(row.id)
+                for item in findings
             ],
         )
 
