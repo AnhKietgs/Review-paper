@@ -1,4 +1,4 @@
-"""Human approval and immutable report snapshot."""
+"""Optional sign-off and export of immutable AI report snapshots."""
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from app.services.review_service import ReviewService
 
 
 class ApprovalService:
-    """Freeze an export only after provenance and support checks."""
+    """Serve AI reports and support optional explicit sign-off."""
 
     def __init__(self, session: Session):
         self.session = session
@@ -72,11 +72,11 @@ class ApprovalService:
         return self.reviews.get(review_id)
 
     def export(self, review_id: str) -> str:
-        """Return frozen bytes rather than recomputing from mutable metadata."""
+        """Return the frozen AI report when the run completes."""
         review = self.reviews.get(review_id)
         row = self.reviews.repository.get(review_id)
-        if review.status != "approved" or not row.approved_markdown:
+        if review.status not in {"completed", "approved"} or not row.approved_markdown:
             raise ConflictError(
-                "review_not_approved", "Approve this review before export"
+                "review_incomplete", "Complete the AI review before export"
             )
         return row.approved_markdown

@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import path from "path";
 
-test("upload → review → inspect → source → edit → verify → approve → export", async ({ page }) => {
+test("upload → AI review → inspect → export → optional edit and verify", async ({ page }) => {
   const title = `Browser study ${Date.now()}`;
   await page.goto("/papers");
   await expect(page.getByText("FIXTURE", { exact: true })).toBeVisible();
@@ -25,16 +25,19 @@ test("upload → review → inspect → source → edit → verify → approve �
   await page.getByRole("link", { name: "Mở bản review" }).click();
   await page.getByRole("button", { name: /Xem nguồn/ }).first().click();
   await expect(page.getByTestId("source-viewer")).toBeVisible();
+  const firstDownload = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Tải báo cáo AI" }).click();
+  expect((await firstDownload).suggestedFilename()).toMatch(/review-.*\.md/);
+  await page.getByRole("button", { name: "Tạo revision mới" }).click();
   const claim = page.getByLabel("Nhận xét 1");
   await claim.fill((await claim.inputValue()) + " (ghi chú biên tập)");
   await page.getByRole("button", { name: "Lưu chỉnh sửa" }).click();
-  await expect(page.getByText("pending", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Chờ kiểm chứng", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Kiểm chứng bản sửa" }).click();
   await expect(page.getByTestId("run-status")).toHaveText("completed", { timeout: 60_000 });
   await page.getByRole("link", { name: "Mở bản review" }).click();
-  await page.getByRole("button", { name: "Duyệt bản review" }).click();
-  await expect(page.getByText("approved", { exact: true })).toBeVisible();
+  await expect(page.getByText("completed", { exact: true }).first()).toBeVisible();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Tải Markdown" }).click();
+  await page.getByRole("link", { name: "Tải báo cáo AI" }).click();
   expect((await downloadPromise).suggestedFilename()).toMatch(/review-.*\.md/);
 });

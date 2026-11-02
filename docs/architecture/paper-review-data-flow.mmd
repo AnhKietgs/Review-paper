@@ -1,0 +1,91 @@
+---
+config:
+  theme: base
+  darkMode: false
+  themeVariables:
+    background: "#ffffff"
+    primaryColor: "#eef6f2"
+    primaryTextColor: "#18352e"
+    primaryBorderColor: "#7fa99a"
+    lineColor: "#537d70"
+    secondaryColor: "#f6f8f5"
+    tertiaryColor: "#ffffff"
+---
+flowchart LR
+    U["Người dùng"]
+    G["Groq API<br/>dịch vụ ngoài"]
+
+    subgraph LOCAL["Ứng dụng local trong Docker"]
+        FE["Next.js<br/>thư viện · rubric · review · run inspector"]
+        API["FastAPI REST controllers"]
+        UP["PaperService<br/>nhận PDF/DOCX và metadata"]
+        ING["DocumentIngress<br/>MarkItDown + trích xuất trang/đoạn gốc"]
+        REV["ReviewService / RunService<br/>chốt phiên bản paper, rubric và paper đối chiếu"]
+        W["Background worker<br/>đọc checkpoint, xử lý từng lượt"]
+        SUP["Supervisor<br/>nhận tiến độ, trả hành động kế tiếp"]
+        TG["Tool Gateway + Permission<br/>chỉ đọc dữ liệu trong run scope"]
+        CTX["Context Builder<br/>ngữ cảnh tối thiểu cho agent cần gọi"]
+        SCI["Scientific Review<br/>analysis + finding JSON"]
+        REL["Related-Work Comparator<br/>comparison JSON"]
+        VER["Evidence Verifier<br/>assessment JSON"]
+        OG["Output Gate<br/>kiểm tra schema, source, quote, locator"]
+        REP["ReportComposer<br/>Markdown từ findings đã lưu"]
+    end
+
+    subgraph STORE["Dữ liệu lưu trên máy"]
+        FS[("File store<br/>PDF/DOCX gốc theo version")]
+        DOC[("SQLite<br/>paper, rubric, chunk, locator")]
+        RUN[("SQLite<br/>run scope, checkpoint, event")]
+        OUT[("SQLite<br/>review revision, finding, report")]
+    end
+
+    U -->|file gốc + metadata| FE
+    U -->|rubric + chọn paper chính / liên quan| FE
+    FE -->|multipart / JSON| API
+    API --> UP
+    UP -->|file gốc| FS
+    UP -->|đường dẫn file| ING
+    ING -->|Markdown, chunk, vị trí nguồn, hash| DOC
+    API -->|rubric và paper CRUD| DOC
+
+    FE -->|yêu cầu review| API
+    API --> REV
+    DOC -->|phiên bản paper + rubric được chọn| REV
+    REV -->|revision mới| OUT
+    REV -->|run scope + checkpoint đầu| RUN
+    RUN -->|trạng thái lượt chạy| W
+
+    W -->|tiến độ, hàng đợi, giới hạn| SUP
+    SUP -->|hành động JSON| W
+    W -->|ID chunk + rubric cần đọc| TG
+    DOC -->|chunk + locator + rubric trong scope| TG
+    TG -->|kết quả được phép| CTX
+    CTX -->|paper chính, từng batch| SCI
+    CTX -->|paper chính + paper liên quan đã chọn| REL
+    CTX -->|finding chờ + đoạn nguồn| VER
+
+    SUP -->|prompt điều phối nhỏ| G
+    SCI -->|prompt ngữ cảnh giới hạn| G
+    REL -->|prompt so sánh giới hạn| G
+    VER -->|prompt kiểm chứng giới hạn| G
+    G -->|JSON theo schema của agent| SUP
+    G -->|analysis + findings| SCI
+    G -->|comparisons| REL
+    G -->|assessments| VER
+
+    SCI -->|finding + evidence refs| OG
+    REL -->|comparison + evidence refs| OG
+    DOC -->|source/version/quote/locator để đối chiếu| OG
+    OG -->|finding hợp lệ: đưa vào hàng chờ kiểm chứng| W
+    OG -->|finding lỗi + lý do: có thể sửa giới hạn| W
+    VER -->|supported / uncertain / unsupported| W
+    W -->|findings + analysis| OUT
+    W -->|checkpoint + trace mỗi lượt| RUN
+    W -->|chỉ khi completed| REP
+    OUT -->|findings đã lưu| REP
+    REP -->|báo cáo Markdown| OUT
+
+    RUN -->|trạng thái + sự kiện| API
+    OUT -->|review + báo cáo| API
+    API -->|REST responses| FE
+    FE -->|hiển thị kết quả và link nguồn| U

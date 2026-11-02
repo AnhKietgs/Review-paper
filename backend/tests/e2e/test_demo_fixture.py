@@ -26,7 +26,6 @@ def test_seed_twice_and_full_fixture_review(api_client):
     comparisons = [f for f in review["findings"] if f["kind"] == "comparison"]
     assert comparisons
     assert all(len({e["paper_id"] for e in f["evidence"]}) == 2 for f in comparisons)
-    approved = api_client.post(f"/api/v1/reviews/{run['review_id']}/approve", json={})
-    assert approved.status_code == 200, approved.text
+    assert review["status"] == "completed"
     export = api_client.get(f"/api/v1/reviews/{run['review_id']}/export.md")
     assert "fixture" in export.text

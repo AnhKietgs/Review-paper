@@ -28,12 +28,17 @@ def test_export_keeps_original_provider_mode(api_client, review_seed, monkeypatc
 
 def test_bad_edited_source_is_rejected_without_failing_run(api_client, review_seed):
     review = completed_review(api_client, review_seed(False))
-    review["findings"][0]["evidence"][0]["chunk_id"] = "outside-run"
-    api_client.patch(
-        f"/api/v1/reviews/{review['id']}", json={"findings": review["findings"]}
+    revision = api_client.post(
+        f"/api/v1/reviews/{review['id']}/revisions"
+    ).json()
+    revision["findings"][0]["evidence"][0]["chunk_id"] = "outside-run"
+    edited = api_client.patch(
+        f"/api/v1/reviews/{revision['id']}",
+        json={"findings": revision["findings"]},
     )
+    assert edited.status_code == 200, edited.text
     accepted = api_client.post(
-        f"/api/v1/reviews/{review['id']}/runs", json={"mode": "verify"}
+        f"/api/v1/reviews/{revision['id']}/runs", json={"mode": "verify"}
     ).json()
     for _ in range(15):
         RunWorker().tick()
@@ -42,39 +47,48 @@ def test_bad_edited_source_is_rejected_without_failing_run(api_client, review_se
         == "completed"
     )
     result = api_client.get(f"/api/v1/reviews/{accepted['review_id']}").json()
-    assert result["findings"][0]["status"] == "unsupported"
+    assert result["status"] == "completed"
+    assert result["findings"][0]["status"] == "supported"
+    assert result["findings"][0]["evidence"][0]["chunk_id"] != "outside-run"
 
 
 def test_edit_requires_verification_and_approved_revision_is_locked(
     api_client, review_seed
 ):
     review = completed_review(api_client, review_seed())
-    findings = review["findings"]
+    assert review["status"] == "completed"
+    assert api_client.patch(
+        f"/api/v1/reviews/{review['id']}", json={"summary": "overwrite"}
+    ).status_code == 409
+    revision = api_client.post(
+        f"/api/v1/reviews/{review['id']}/revisions"
+    ).json()
+    findings = revision["findings"]
     findings[0]["claim"] = "Human clarified observation"
     edited = api_client.patch(
-        f"/api/v1/reviews/{review['id']}", json={"findings": findings}
+        f"/api/v1/reviews/{revision['id']}", json={"findings": findings}
     )
     assert edited.status_code == 200, edited.text
     assert edited.json()["findings"][0]["status"] == "pending"
-    assert (
-        api_client.post(f"/api/v1/reviews/{review['id']}/approve", json={}).status_code
-        == 409
+    approval = api_client.post(
+        f"/api/v1/reviews/{revision['id']}/approve", json={}
     )
+    assert approval.status_code == 409
     accepted = api_client.post(
-        f"/api/v1/reviews/{review['id']}/runs", json={"mode": "verify"}
+        f"/api/v1/reviews/{revision['id']}/runs", json={"mode": "verify"}
     ).json()
     for _ in range(15):
         RunWorker().tick()
     new_id = accepted["review_id"]
-    approved = api_client.post(f"/api/v1/reviews/{new_id}/approve", json={})
-    assert approved.status_code == 200, approved.text
+    assert api_client.get(f"/api/v1/reviews/{new_id}").json()["status"] == "completed"
     assert (
         api_client.patch(
             f"/api/v1/reviews/{new_id}", json={"summary": "overwrite"}
         ).status_code
         == 409
     )
-    assert api_client.get(f"/api/v1/reviews/{review['id']}").json()["status"] == "draft"
+    original_revision = api_client.get(f"/api/v1/reviews/{revision['id']}")
+    assert original_revision.json()["status"] == "draft"
 
 
 def test_unsupported_blocks_and_human_confirmation_keeps_uncertain_label(

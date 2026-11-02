@@ -6,6 +6,6 @@ COPY app ./app
 COPY migrations ./migrations
 COPY docker ./docker
 ENV PYTHONPATH=/app
-RUN chmod +x /app/docker/entrypoint.sh
+RUN sed -i 's/\r$//' /app/docker/entrypoint.sh && chmod +x /app/docker/entrypoint.sh
 CMD ["/app/docker/entrypoint.sh"]
 

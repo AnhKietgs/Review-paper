@@ -31,7 +31,11 @@ def chunk_source(
     content_version: int,
     source_file_hash: str,
 ) -> tuple[list[PaperChunk], list[SourceLocator]]:
-    """Create chunks and mark ambiguous source mapping explicitly."""
+    """Create chunks tied to original pages or paragraphs.
+
+    Markdown alignment is optional: the original extractor already provides
+    the page or paragraph number and the exact source text for each chunk.
+    """
     chunks: list[PaperChunk] = []
     locators: list[SourceLocator] = []
     for locator_value, text, locator_type in source_sections:
@@ -60,7 +64,12 @@ def chunk_source(
                 locator_value=locator_value,
                 quote=text[:300],
                 source_file_hash=source_file_hash,
-                status="resolved" if span else "unresolved_locator",
+                status=(
+                    "resolved"
+                    if locator_type in {"pdf_page", "docx_paragraph"}
+                    and locator_value
+                    else "unresolved_locator"
+                ),
             )
         )
     return chunks, locators

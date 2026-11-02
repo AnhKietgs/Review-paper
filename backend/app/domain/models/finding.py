@@ -9,4 +9,5 @@ class FindingStatus(StrEnum):
     PENDING = "pending"
     SUPPORTED = "supported"
     UNSUPPORTED = "unsupported"
-    NEEDS_HUMAN_REVIEW = "needs_human_review"
+    UNCERTAIN = "uncertain"
+    NEEDS_HUMAN_REVIEW = "needs_human_review"  # Legacy saved findings.

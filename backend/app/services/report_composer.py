@@ -1,4 +1,4 @@
-"""Deterministic Markdown composition from accepted structured findings."""
+"""Deterministic Markdown composition from AI-checked findings."""
 
 from app.api.v1.schemas.reviews import ReviewRead
 
@@ -20,11 +20,17 @@ class ReportComposer:
     @staticmethod
     def _finding_lines(finding) -> list[str]:
         lines = [f"### {finding.claim}", "", f"Trạng thái: `{finding.status}`.", ""]
-        if finding.status == "needs_human_review":
-            lines += ["Người dùng đã xác nhận giữ nhận xét chưa chắc chắn này.", ""]
+        if finding.status != "supported":
+            lines += [
+                "⚠️ AI chưa xác minh được nhận xét này. "
+                "Không dùng như kết luận khoa học.",
+                "",
+            ]
         lines += [finding.verdict, ""]
         for item in finding.evidence:
             place = "PDF trang" if item["locator_type"] == "pdf_page" else "DOCX đoạn"
+            if finding.status != "supported":
+                lines += ["Đoạn trích dưới đây chưa đủ để chứng minh nhận xét:", ""]
             lines += [
                 f"> {item['quote']}",
                 "",
@@ -45,7 +51,12 @@ class ReportComposer:
             "",
             f"Rubric: `{review.rubric_id}` · v{review.rubric_version}",
             "",
-            "Trạng thái duyệt: **approved**",
+            f"Trạng thái báo cáo: **{review.status}**",
+            "",
+            f"Nhận xét có bằng chứng hỗ trợ: "
+            f"**{sum(item.status == 'supported' for item in review.findings)}**; "
+            f"chưa xác minh: "
+            f"**{sum(item.status != 'supported' for item in review.findings)}**.",
             "",
         ]
         if review.reviewer_edits.get("summary"):
@@ -56,7 +67,8 @@ class ReportComposer:
                 "",
             ]
         remaining = sorted(
-            review.findings, key=lambda finding: (finding.criterion_code, finding.id)
+            (finding for finding in review.findings if finding.status == "supported"),
+            key=lambda finding: (finding.criterion_code, finding.id),
         )
         for title, keys in SECTIONS:
             lines += [f"## {title}", ""]
@@ -73,6 +85,20 @@ class ReportComposer:
         if remaining:
             lines += ["## Nhận xét bổ sung", ""]
             for finding in remaining:
+                lines += self._finding_lines(finding)
+        unverified = sorted(
+            (finding for finding in review.findings if finding.status != "supported"),
+            key=lambda finding: (finding.criterion_code, finding.id),
+        )
+        if unverified:
+            lines += [
+                "## Nhận xét chưa xác minh",
+                "",
+                "Các nhận xét này đã được AI kiểm tra nhưng chưa đủ bằng chứng "
+                "để dùng như kết luận. Hệ thống giữ lại để thể hiện giới hạn đánh giá.",
+                "",
+            ]
+            for finding in unverified:
                 lines += self._finding_lines(finding)
         references = review.analysis.get("references", {})
         if not review.references:
@@ -95,8 +121,8 @@ class ReportComposer:
             "So sánh chỉ áp dụng cho các trích đoạn của nguồn do người dùng chọn. "
             "Dẫn chứng đúng vị trí không tự chứng minh tính đúng đắn khoa học "
             "hoặc tính mới "
-            "so với toàn bộ lĩnh vực. Đây là công cụ hỗ trợ, "
-            "người dùng quyết định bản cuối.",
+            "so với toàn bộ lĩnh vực. Báo cáo ghi riêng mọi nhận xét "
+            "chưa được xác minh.",
             "",
         ]
         return "\n".join(lines)

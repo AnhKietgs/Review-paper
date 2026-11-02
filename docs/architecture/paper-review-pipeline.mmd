@@ -1,0 +1,80 @@
+---
+config:
+  theme: base
+  darkMode: false
+  themeVariables:
+    background: "#ffffff"
+    primaryColor: "#eef6f2"
+    primaryTextColor: "#18352e"
+    primaryBorderColor: "#7fa99a"
+    lineColor: "#537d70"
+    secondaryColor: "#f6f8f5"
+    tertiaryColor: "#ffffff"
+---
+flowchart LR
+    U["Người dùng"] --> FE["Next.js / Node.js<br/>Thư viện · Rubric · Review · Run Inspector"]
+    FE -->|REST JSON / upload| API["FastAPI controllers<br/>MVC: Controller"]
+
+    subgraph DATA["Chuẩn bị dữ liệu và lưu trữ"]
+        CRUD["Services + domain rules<br/>Paper · Rubric · Review CRUD"]
+        ING["DocumentIngress<br/>PDF / DOCX"]
+        MD["MarkItDown → Markdown"]
+        LOC["Trích xuất trang / đoạn gốc<br/>Chunk + Source Locator"]
+        DB[(SQLite + file store<br/>version · chunk · locator · run · event)]
+        ING --> MD
+        ING --> LOC
+        MD --> DB
+        LOC --> DB
+        CRUD --> DB
+    end
+
+    API --> CRUD
+    API --> ING
+    API -->|POST review run| RS["RunService<br/>chốt phiên bản paper, rubric, nguồn đối chiếu"]
+    RS --> DB
+    RS --> W["Background worker<br/>mỗi lượt xử lý một hành động"]
+
+    subgraph HARNESS["Mini harness tự xây dựng · loop tuần tự"]
+        MEM["RunState + checkpoint<br/>Memory"]
+        SUP["Supervisor Agent<br/>chọn hành động hợp lệ"]
+        GUARD{"Budget + action guard"}
+        QUEUE["Document queue<br/>Groq: 1 trang / batch"]
+        TOOL["Tool Gateway<br/>read_chunks · read_rubric · search_reference"]
+        PERM{"Permission<br/>role + nguồn + version"}
+        CTX["Context Builder<br/>chỉ dữ liệu cần cho agent"]
+        SCI["Scientific Review Agent<br/>phân tích paper chính"]
+        REL["Related-Work Comparator<br/>chỉ khi đã chọn paper liên quan"]
+        GATE{"Output Gate<br/>schema · nguồn · quote · locator"}
+        VER["Evidence Verifier Agent<br/>chỉ khi có nhận xét chờ kiểm chứng"]
+        FIX["Sửa nhận xét có giới hạn<br/>gọi lại agent gốc khi cần"]
+        DONE["Hoàn tất / chưa đủ điều kiện"]
+
+        MEM --> SUP --> GUARD
+        GUARD -->|next_batch| QUEUE --> MEM
+        GUARD -->|analyze / compare / verify / repair| TOOL --> PERM
+        PERM -->|allow| CTX
+        PERM -->|deny| MEM
+        CTX -->|analyze| SCI
+        CTX -->|compare| REL
+        CTX -->|verify| VER
+        CTX -->|repair| FIX
+        SCI --> GATE
+        REL --> GATE
+        FIX --> GATE
+        GATE -->|hợp lệ: pending| MEM
+        GATE -->|không hợp lệ: unsupported / repair| MEM
+        VER -->|supported / uncertain / unsupported| MEM
+        GUARD -->|finish / hết budget| DONE
+    end
+
+    W --> MEM
+    DB -->|paper + rubric + checkpoint| W
+    SCI --> LLM["Groq API<br/>model cấu hình theo agent"]
+    REL --> LLM
+    VER --> LLM
+    SUP --> LLM
+    DONE -->|chỉ khi completed| REPORT["ReportComposer<br/>báo cáo Markdown có bằng chứng"]
+    REPORT --> DB
+    MEM -->|checkpoint + trace| DB
+    DB -->|poll run / events / review| API
+    API --> FE

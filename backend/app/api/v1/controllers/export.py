@@ -26,7 +26,7 @@ def approve_review(
 
 @router.get("/{review_id}/export.md")
 def export_review(review_id: str, unit: UnitOfWork = Depends(get_uow)):
-    """Download the exact approved report."""
+    """Download the exact AI-completed report."""
     report = ApprovalService(unit.session).export(review_id)
     return Response(
         report,

@@ -39,8 +39,26 @@ def test_scanned_pdf_is_rejected(tmp_path: Path):
         DocumentIngress().ingest(source, uuid4(), 1)
 
 
-def test_duplicate_quote_cannot_be_safely_located(tmp_path: Path):
+def test_duplicate_text_keeps_distinct_original_page_locations(tmp_path: Path):
     source = tmp_path / "ambiguous.pdf"
     make_pdf(source, ["Identical finding.", "Identical finding."])
     result = DocumentIngress().ingest(source, uuid4(), 1)
-    assert all(locator.status == "unresolved_locator" for locator in result.locators)
+    assert [locator.locator_value for locator in result.locators] == ["1", "2"]
+    assert all(locator.status == "resolved" for locator in result.locators)
+
+
+def test_page_locator_survives_markdown_formatting_changes(tmp_path: Path):
+    source = tmp_path / "formatted.pdf"
+    make_pdf(source, ["A finding split across extracted lines."])
+
+    class ReformattedConverter:
+        def convert(self, _path):
+            return "# A finding: split across extracted lines."
+
+    result = DocumentIngress(converter=ReformattedConverter()).ingest(
+        source, uuid4(), 1
+    )
+    assert result.chunks[0].markdown_text == "A finding split across extracted lines."
+    assert result.chunks[0].markdown_start == result.chunks[0].markdown_end == 0
+    assert result.locators[0].locator_value == "1"
+    assert result.locators[0].status == "resolved"

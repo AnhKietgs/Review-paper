@@ -9,6 +9,7 @@ from app.agents.ports import LLMFailure
 from app.core.config import Settings
 from app.harness.events import RunEventInput, RunEventRecorder
 from app.harness.memory import RunMemory
+from app.harness.output_gate import OutputGate
 from app.harness.runner import AgentRunner
 from app.infrastructure.groq.client import GroqClient
 from app.infrastructure.groq.fixture_client import FixtureClient
@@ -16,6 +17,8 @@ from app.infrastructure.groq.router import GroqRouter
 from app.infrastructure.persistence.orm_models import FindingRow, ReviewRow, RunRow
 from app.infrastructure.persistence.source_catalog import SqlSourceCatalog
 from app.infrastructure.persistence.unit_of_work import UnitOfWork
+from app.services.report_composer import ReportComposer
+from app.services.review_service import ReviewService
 
 TURN_LOCK = Lock()
 
@@ -62,8 +65,44 @@ class RunWorker:
         self.thread = None
 
     @staticmethod
+    def _freeze_review(session, review: ReviewRow, state) -> None:
+        """Save a report with unsupported or invalid evidence clearly labeled."""
+        gate = OutputGate(SqlSourceCatalog(session))
+        for finding in session.scalars(
+            select(FindingRow).where(FindingRow.review_id == review.id)
+        ):
+            draft = {
+                key: getattr(finding, key)
+                for key in (
+                    "id", "criterion_code", "claim", "kind",
+                    "compared_paper_ids", "evidence",
+                )
+            }
+            if not gate.validate(draft, state.scope).passed:
+                finding.status = "unsupported"
+                finding.verdict = (
+                    f"{finding.verdict}; nguồn trích dẫn không qua kiểm tra"
+                ).strip("; ")
+                finding.evidence = []
+        session.flush()
+        review.status = "completed"
+        report = ReportComposer().render_markdown(
+            ReviewService(session).get(review.id)
+        )
+        review.approved_markdown = (
+            f"> Chế độ tạo: **{state.llm_mode}**. "
+            + (
+                "Fixture minh họa luồng; không phải kết quả AI trực tiếp.\n\n"
+                if state.llm_mode == "fixture"
+                else "Báo cáo do AI tự kiểm tra; nhận xét chưa xác minh được "
+                "ghi riêng.\n\n"
+            )
+            + report
+        )
+
+    @staticmethod
     def recover_interrupted() -> None:
-        """On process start, require explicit resume for previously running work."""
+        """Recover interrupted runs and completed reports from older versions."""
         with UnitOfWork() as unit:
             for row in unit.session.scalars(
                 select(RunRow).where(RunRow.status == "running")
@@ -77,6 +116,23 @@ class RunWorker:
                         output_summary="Process restarted",
                     ),
                 )
+            for run in unit.session.scalars(
+                select(RunRow).where(RunRow.status == "completed")
+            ):
+                review = unit.session.get(ReviewRow, run.review_id)
+                if (
+                    review is None or review.deleted_at is not None
+                    or review.status != "draft"
+                    or review.approved_markdown or review.reviewer_edits
+                ):
+                    continue
+                findings = list(unit.session.scalars(
+                    select(FindingRow).where(FindingRow.review_id == review.id)
+                ))
+                if any(item.status == "pending" for item in findings):
+                    continue
+                state = RunMemory(unit.session).load(run.id)
+                RunWorker._freeze_review(unit.session, review, state)
 
     @staticmethod
     def _claim() -> str | None:
@@ -120,6 +176,12 @@ class RunWorker:
             }
             if "summary" not in review.reviewer_edits:
                 review.summary = "\n".join(state.analysis.get("objective", []))
+            current_ids = {item["id"] for item in state.findings}
+            for old in unit.session.scalars(
+                select(FindingRow).where(FindingRow.review_id == review.id)
+            ):
+                if old.id not in current_ids:
+                    unit.session.delete(old)
             for item in state.findings:
                 row = unit.session.get(FindingRow, item["id"])
                 values = {
@@ -141,6 +203,9 @@ class RunWorker:
                 else:
                     for key, value in values.items():
                         setattr(row, key, value)
+            unit.session.flush()
+            if state.status == "completed":
+                RunWorker._freeze_review(unit.session, review, state)
             recorder = RunEventRecorder(unit.session)
             for event in events.items:
                 recorder.append(
@@ -193,7 +258,7 @@ class RunWorker:
                                     action="provider_retry",
                                     output_summary=(
                                         f"Rate limited; waiting {wait_seconds}s, "
-                                        f"then retry {attempt}/2"
+                                        f"then retry {attempt}"
                                     ),
                                     payload={"wait_seconds": wait_seconds},
                                 ),
@@ -207,6 +272,12 @@ class RunWorker:
                         "related_work": settings.groq_related_work_model,
                         "evidence_verifier": settings.groq_evidence_verifier_model,
                     }
+                    completion_budgets = {
+                        "supervisor": 256,
+                        "scientific_review": 3072,
+                        "related_work": 2048,
+                        "evidence_verifier": 4096,
+                    }
                     llm = GroqRouter(
                         {
                             role: GroqClient(
@@ -215,6 +286,7 @@ class RunWorker:
                                 rate_limit_wait_seconds=(
                                     settings.groq_rate_limit_wait_seconds
                                 ),
+                                max_completion_tokens=completion_budgets[role],
                                 on_retry=retry_event(role),
                             )
                             for role, model in models.items()

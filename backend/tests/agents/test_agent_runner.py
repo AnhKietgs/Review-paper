@@ -5,6 +5,7 @@ from app.harness.memory import RunMemory
 from app.harness.runner import AgentRunner
 from app.harness.state import RunScope, RunState
 from app.infrastructure.groq.fixture_client import FixtureClient
+from app.agents.schemas import VerificationOutput
 
 
 class Catalog:
@@ -44,9 +45,11 @@ def run_state(references=None, chunks=None, **limits):
     )
 
 
-def execute(state, client=None):
+def execute(state, client=None, catalog=None):
     memory, events = RunMemory(), RunEventRecorder()
-    runner = AgentRunner(client or FixtureClient(), Catalog(), memory, events)
+    runner = AgentRunner(
+        client or FixtureClient(), catalog or Catalog(), memory, events
+    )
     memory.save(state)
     while state.status == "running":
         state = runner.run_turn(state)
@@ -98,6 +101,18 @@ def test_document_batch_budget_preserves_unprocessed_ids():
     assert len(state.remaining_chunk_ids) == 3
 
 
+def test_groq_batches_one_page_at_a_time_to_limit_prompt_size():
+    state, events = execute(
+        run_state(chunks=["main-1", "main-2"], llm_mode="groq")
+    )
+    batches = [
+        item["payload"]["source_ids"]
+        for item in events.items if item["action"] == "batch_selected"
+    ]
+    assert state.status == "completed"
+    assert batches == [["main-1"], ["main-2"]]
+
+
 def test_model_cannot_choose_persisted_finding_ids():
     import json
     from app.agents.schemas import ScientificOutput
@@ -113,3 +128,44 @@ def test_model_cannot_choose_persisted_finding_ids():
     state, _ = execute(run_state(chunks=["main-1", "main-2"]), ReusedIds())
     assert len({f["id"] for f in state.findings}) == 2
     assert all(f["id"] != "existing-foreign-finding" for f in state.findings)
+
+
+def test_verifier_rejection_triggers_one_repair_and_reverification():
+    class RejectOnce(FixtureClient):
+        def __init__(self):
+            super().__init__()
+            self.verification_calls = 0
+
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            if schema is VerificationOutput:
+                self.verification_calls += 1
+                if self.verification_calls == 1:
+                    result.assessments[0].status = "unsupported"
+                    result.assessments[0].reason = "Claim requires a narrower quote"
+            return result
+
+    state, events = execute(run_state(), RejectOnce())
+    assert state.status == "completed"
+    assert state.repair_count == 1
+    assert len(state.findings) == 1
+    assert state.findings[0]["status"] == "supported"
+    assert any(item["action"] == "finding_repaired" for item in events.items)
+
+
+def test_invalid_provenance_stays_unverified_after_bounded_repair():
+    class StrictCatalog(Catalog):
+        def chunk(self, chunk_id):
+            if chunk_id == "outside-run":
+                return None
+            return super().chunk(chunk_id)
+
+    state, events = execute(
+        run_state(), FixtureClient(bad_source=True), StrictCatalog()
+    )
+    assert state.status == "completed"
+    assert state.repair_count == 1
+    assert len(state.findings) == 1
+    assert state.findings[0]["status"] == "unsupported"
+    assert state.findings[0]["evidence"] == []
+    assert any(item["action"] == "repair_unresolved" for item in events.items)

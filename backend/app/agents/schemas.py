@@ -37,7 +37,7 @@ class FindingDraft(StrictModel):
 class AgentAction(StrictModel):
     """Supervisor requests exactly one next action."""
 
-    action: Literal["analyze", "compare", "verify", "next_batch", "finish"]
+    action: Literal["analyze", "compare", "verify", "repair", "next_batch", "finish"]
     reason: str
     reference_paper_id: str | None = None
 
@@ -61,7 +61,7 @@ class EvidenceAssessment(StrictModel):
     """Semantic support judgment, subject to deterministic provenance gate."""
 
     finding_id: str
-    status: Literal["supported", "unsupported", "needs_human_review"]
+    status: Literal["supported", "unsupported", "uncertain"]
     reason: str
 
 

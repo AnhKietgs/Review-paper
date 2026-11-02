@@ -62,7 +62,29 @@ class AgentRunner:
         self._event(state, role, "agent_finished", "Structured output received")
         return output
 
-    def _stage(self, state: RunState, drafts: list[dict]) -> None:
+    def _queue_repair(
+        self, state: RunState, finding: dict, role: str, source_ids: list[str]
+    ) -> None:
+        if finding["id"] in state.repair_attempted_ids:
+            return
+        if state.repair_count + len(state.repair_queue) >= state.max_repairs:
+            self._event(
+                state, "harness", "repair_skipped", "Repair budget exhausted",
+                finding_id=finding["id"],
+            )
+            return
+        state.repair_attempted_ids.append(finding["id"])
+        state.repair_queue.append(
+            {"finding_id": finding["id"], "role": role, "source_ids": source_ids}
+        )
+        self._event(
+            state, "harness", "repair_queued", "One bounded repair attempt",
+            finding_id=finding["id"], role=role,
+        )
+
+    def _stage(
+        self, state: RunState, drafts: list[dict], role: str, source_ids: list[str]
+    ) -> None:
         for draft in drafts:
             finding = FindingDraft.model_validate(draft).model_dump(mode="json")
             # Model-generated IDs must never address an existing persisted finding.
@@ -82,10 +104,12 @@ class AgentRunner:
                 state.findings.append(
                     {
                         **finding,
+                        "evidence": [],
                         "status": "unsupported",
                         "verdict": ", ".join(result.reason_codes),
                     }
                 )
+                self._queue_repair(state, finding, role, source_ids)
 
     def _context(
         self,
@@ -123,7 +147,9 @@ class AgentRunner:
         output = self._invoke(state, "scientific_review", context)
         for key, value in output["analysis"].items():
             state.analysis.setdefault(key, []).append(value)
-        self._stage(state, output["findings"])
+        self._stage(
+            state, output["findings"], "scientific_review", state.current_batch_ids
+        )
         state.processed_chunk_ids.extend(state.current_batch_ids)
         state.remaining_chunk_ids = [
             item
@@ -159,7 +185,10 @@ class AgentRunner:
             "reason": output["reason"],
             "chunk_ids": [item["id"] for item in sources.data],
         }
-        self._stage(state, output["findings"])
+        self._stage(
+            state, output["findings"], "related_work",
+            [item["id"] for item in context["chunks"]],
+        )
 
     def _verify(self, state: RunState, gateway: ToolGateway) -> None:
         valid = []
@@ -171,9 +200,15 @@ class AgentRunner:
                 state.findings.append(
                     {
                         **finding,
+                        "evidence": [],
                         "status": "unsupported",
                         "verdict": ", ".join(result.reason_codes),
                     }
+                )
+                self._queue_repair(
+                    state, finding, "related_work" if finding["kind"] == "comparison"
+                    else "scientific_review",
+                    [item["chunk_id"] for item in finding["evidence"]],
                 )
                 self._event(
                     state,
@@ -206,14 +241,26 @@ class AgentRunner:
             assessment = assessments.get(
                 finding["id"],
                 {
-                    "status": "needs_human_review",
+                    "status": "uncertain",
                     "reason": "Verifier omitted this finding",
                 },
             )
             status = assessment["status"] if result.passed else "unsupported"
             state.findings.append(
-                {**finding, "status": status, "verdict": assessment["reason"]}
+                {
+                    **finding,
+                    "evidence": finding["evidence"] if result.passed else [],
+                    "status": status,
+                    "verdict": assessment["reason"],
+                }
             )
+            if status != "supported":
+                self._queue_repair(
+                    state, finding,
+                    "related_work" if finding["kind"] == "comparison"
+                    else "scientific_review",
+                    [item["chunk_id"] for item in finding["evidence"]],
+                )
             self._event(
                 state,
                 "output_gate",
@@ -223,6 +270,66 @@ class AgentRunner:
                 checks=result.checks,
             )
         state.pending_findings = []
+
+    def _repair(self, state: RunState, gateway: ToolGateway) -> None:
+        request = state.repair_queue.pop(0)
+        state.repair_count += 1
+        original = next(
+            (item for item in state.findings if item["id"] == request["finding_id"]),
+            None,
+        )
+        if original is None:
+            return
+        role = request["role"]
+        ids = [
+            chunk_id for chunk_id in request["source_ids"]
+            if self.catalog.chunk(chunk_id) is not None
+            and state.scope.permits(
+                self.catalog.chunk(chunk_id)["paper_id"],
+                self.catalog.chunk(chunk_id)["content_version"],
+            )
+        ]
+        if not ids:
+            ids = state.processed_chunk_ids[-2:]
+        if not ids:
+            self._event(state, role, "repair_skipped", "No allowed source chunks")
+            return
+        context = self._context(state, gateway, role, ids)
+        context["repair_request"] = {
+            "claim": original["claim"],
+            "kind": original["kind"],
+            "verdict": original["verdict"],
+        }
+        output = self._invoke(state, role, context)
+        candidates = [
+            FindingDraft.model_validate(item).model_dump(mode="json")
+            for item in output["findings"]
+            if item["kind"] == original["kind"]
+        ]
+        if not candidates:
+            self._event(state, role, "repair_unresolved", "No supported revision")
+            return
+        candidate = candidates[0]
+        candidate["id"] = str(uuid4())
+        result = self.output_gate.validate(candidate, state.scope)
+        self._event(
+            state, "output_gate",
+            "validation_passed" if result.passed else "validation_failed",
+            ", ".join(result.reason_codes), finding_id=candidate["id"],
+            checks=result.checks,
+        )
+        if not result.passed:
+            self._event(state, role, "repair_unresolved", "Provenance still invalid")
+            return
+        state.findings = [
+            item for item in state.findings if item["id"] != original["id"]
+        ]
+        state.repair_attempted_ids.append(candidate["id"])
+        state.pending_findings.append(candidate)
+        self._event(
+            state, role, "finding_repaired", "Revision sent to Evidence Verifier",
+            original_finding_id=original["id"], finding_id=candidate["id"],
+        )
 
     def run_turn(self, state: RunState) -> RunState:
         """Execute one supervisor turn and at most one eligible worker."""
@@ -281,7 +388,9 @@ class AgentRunner:
             )
         elif action.action == "next_batch":
             self.memory.save(state)
-            queue = DocumentQueue(self.memory)
+            queue = DocumentQueue(
+                self.memory, batch_size=1 if state.llm_mode == "groq" else 2
+            )
             batch = queue.next_main_batch(state.run_id)
             state.current_batch_ids = batch.chunk_ids
             state.batch_count += 1
@@ -299,6 +408,8 @@ class AgentRunner:
                 self._compare(state, gateway, action.reference_paper_id)
             elif action.action == "verify":
                 self._verify(state, gateway)
+            elif action.action == "repair":
+                self._repair(state, gateway)
         self._event(
             state,
             "memory",

@@ -30,6 +30,10 @@ class RunState(BaseModel):
     current_batch_ids: list[str] = Field(default_factory=list)
     pending_findings: list[dict] = Field(default_factory=list)
     findings: list[dict] = Field(default_factory=list)
+    repair_queue: list[dict] = Field(default_factory=list)
+    repair_attempted_ids: list[str] = Field(default_factory=list)
+    repair_count: int = 0
+    max_repairs: int = 8
     analysis: dict[str, list[str]] = Field(default_factory=dict)
     reference_assessments: dict[str, dict] = Field(default_factory=dict)
     batch_count: int = 0

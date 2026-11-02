@@ -8,6 +8,8 @@ def eligible_actions(state: RunState) -> list[str]:
     """Return legal scheduling choices from current durable progress."""
     if state.pending_findings:
         return ["verify"]
+    if state.repair_queue:
+        return ["repair"]
     if state.current_batch_ids:
         return ["analyze"]
     if state.remaining_chunk_ids:
@@ -30,6 +32,7 @@ class Supervisor:
             "remaining_chunks": len(state.remaining_chunk_ids),
             "current_batch": state.current_batch_ids,
             "pending_findings": len(state.pending_findings),
+            "repair_queue": len(state.repair_queue),
             "unassessed_references": sorted(
                 set(state.scope.reference_versions) - set(state.reference_assessments)
             ),

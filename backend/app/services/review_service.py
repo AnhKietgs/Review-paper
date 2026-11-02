@@ -187,7 +187,9 @@ class ReviewService:
         """Edit a draft and reset edited finding support state."""
         row = self._required(review_id)
         if row.status != "draft":
-            raise ConflictError("review_locked", "Approved review cannot be edited")
+            raise ConflictError(
+                "review_locked", "Create a new revision to edit a completed review"
+            )
         self._ensure_idle(review_id)
         if data.summary is not None:
             row.summary = data.summary

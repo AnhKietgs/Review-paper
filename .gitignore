@@ -32,6 +32,7 @@ out/
 coverage/
 playwright-report/
 test-results/
+*.tsbuildinfo
 
 # Local uploads, converted documents, databases, and logs.
 data/

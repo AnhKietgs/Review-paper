@@ -4,7 +4,8 @@ from enum import StrEnum
 
 
 class ReviewStatus(StrEnum):
-    """Human controlled review lifecycle."""
+    """Review lifecycle with an autonomous completed report."""
 
     DRAFT = "draft"
+    COMPLETED = "completed"
     APPROVED = "approved"
