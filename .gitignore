@@ -5,9 +5,13 @@
 !.env.*.example
 
 # Local agent/workflow state.
+.agents/
+.codex/
 .superpowers/
 .archify/
 .docs/
+/docs/superpowers/
+.npm-prefix/
 
 # Python bytecode, virtual environments, and tool caches.
 __pycache__/
@@ -16,17 +20,26 @@ __pycache__/
 .venv/
 venv/
 env/
-.pytest_cache/
-.pytest-review-*/
+.pytest*/
 .pylint.d/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
+.cache/
+__pypackages__/
+*.egg-info/
+build/
+dist/
 .coverage
 .coverage.*
 htmlcov/
 
 # Node/Next.js generated files and test output.
 node_modules/
+.npm/
+.pnpm-store/
+.turbo/
 .next/
 out/
 coverage/
@@ -38,9 +51,17 @@ test-results/
 data/
 uploads/
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 *.db
+*.db-*
 *.log
+*.tmp
+*.temp
+*~
+/tmp/
+/temp/
 
 # Editor and operating-system metadata.
 .idea/
