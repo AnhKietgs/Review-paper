@@ -10,6 +10,7 @@ from app.agents.supervisor import Supervisor, eligible_actions
 from app.harness.context import ContextBuilder
 from app.harness.document_queue import DocumentQueue
 from app.harness.events import RunEventInput, RunEventRecorder
+from app.harness.evidence import EvidenceResolutionError, EvidenceResolver
 from app.harness.memory import RunMemory
 from app.harness.output_gate import OutputGate
 from app.harness.state import RunState
@@ -27,6 +28,7 @@ class AgentRunner:
         self.graphs = {}
         self.context_builder = ContextBuilder()
         self.output_gate = OutputGate(catalog)
+        self.evidence_resolver = EvidenceResolver(catalog)
 
     def _event(
         self, state: RunState, agent: str, action: str, summary: str = "", **payload
@@ -41,15 +43,18 @@ class AgentRunner:
             ),
         )
 
+    def _client(self, role: str):
+        return self.llm.for_role(role) if hasattr(self.llm, "for_role") else self.llm
+
     def _graph(self, role: str):
         if role not in self.graphs:
-            model = (
-                self.llm.for_role(role)
-                if hasattr(self.llm, "for_role")
-                else self.llm
-            )
-            self.graphs[role] = AgentFactory.build(role, model)
+            self.graphs[role] = AgentFactory.build(role, self._client(role))
         return self.graphs[role]
+
+    def _selects_evidence(self, role: str) -> bool:
+        return role in {"scientific_review", "related_work"} and getattr(
+            self._client(role), "evidence_selection_mode", False
+        )
 
     def _model_id(self, role: str) -> str:
         """Expose only the selected model ID, never provider credentials."""
@@ -62,7 +67,34 @@ class AgentRunner:
         state.call_counts[role] = state.call_counts.get(role, 0) + 1
         output = self._graph(role).invoke({"context": context})["output"]
         self._event(state, role, "agent_finished", "Structured output received")
+        if self._selects_evidence(role):
+            self._resolve_evidence(state, role, output, context["chunks"])
         return output
+
+    def _resolve_evidence(self, state, role, output, sources) -> None:
+        """Materialize authoritative evidence before normal staging or repairs."""
+        for index, finding in enumerate(output["findings"]):
+            try:
+                finding["evidence"] = self.evidence_resolver.resolve(
+                    finding["evidence"], state.scope, sources,
+                )
+            except EvidenceResolutionError as exc:
+                finding["evidence"] = []
+                self._event(
+                    state, role, "evidence_resolution_failed", str(exc),
+                    finding_index=index,
+                )
+                continue
+            self._event(
+                state, role, "evidence_resolved", "Exact text loaded from source spans",
+                finding_index=index,
+                positions=[
+                    {key: reference[key] for key in (
+                        "chunk_id", "span_id", "start_char", "end_char",
+                    )}
+                    for reference in finding["evidence"]
+                ],
+            )
 
     def _queue_repair(
         self, state: RunState, finding: dict, role: str, source_ids: list[str]
@@ -159,7 +191,8 @@ class AgentRunner:
             ToolCall(agent="supervisor", name="read_rubric"), state.scope
         )
         context = self.context_builder.build(
-            state, result.data + (extra or []), rubric.data
+            state, result.data + (extra or []), rubric.data,
+            include_spans=self._selects_evidence(role),
         )
         self._event(
             state,

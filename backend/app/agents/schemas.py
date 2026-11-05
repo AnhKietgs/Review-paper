@@ -21,10 +21,13 @@ class EvidenceReference(StrictModel):
     quote: str = Field(min_length=1)
     locator_type: Literal["pdf_page", "docx_paragraph"]
     locator_value: str
+    span_id: str | None = None
+    start_char: int | None = Field(default=None, ge=0)
+    end_char: int | None = Field(default=None, gt=0)
 
 
-class FindingDraft(StrictModel):
-    """A proposed claim; support status is owned by the harness."""
+class FindingContent(StrictModel):
+    """Claim fields shared by model selections and canonical findings."""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     criterion_code: str
@@ -32,8 +35,26 @@ class FindingDraft(StrictModel):
     kind: Literal[
         "analysis", "strength", "limitation", "comparison", "question", "omission"
     ]
-    evidence: list[EvidenceReference]
     compared_paper_ids: list[str] = Field(default_factory=list)
+
+
+class FindingDraft(FindingContent):
+    """Canonical finding; resolved evidence and support belong to the harness."""
+
+    evidence: list[EvidenceReference]
+
+
+class EvidenceSelection(StrictModel):
+    """The model selects a displayed span; it cannot write quotes or locators."""
+
+    chunk_id: str = Field(min_length=1, max_length=128)
+    span_id: str = Field(min_length=1, max_length=32)
+
+
+class SelectedFinding(FindingContent):
+    """Model-facing claim with only source selections as evidence."""
+
+    evidence: list[EvidenceSelection]
 
 
 class AgentAction(StrictModel):
@@ -58,6 +79,21 @@ class ComparisonOutput(StrictModel):
     """Comparison limited to the supplied selected reference batch."""
 
     findings: list[FindingDraft]
+    assessment: Literal["assessed", "not_assessed"]
+    reason: str
+
+
+class SelectedScientificOutput(StrictModel):
+    """Scientific producer contract using system-assigned span selections."""
+
+    analysis: dict[str, str]
+    findings: list[SelectedFinding]
+
+
+class SelectedComparisonOutput(StrictModel):
+    """Comparator producer contract using system-assigned span selections."""
+
+    findings: list[SelectedFinding]
     assessment: Literal["assessed", "not_assessed"]
     reason: str
 

@@ -11,6 +11,7 @@ export interface Rubric { id: string; name: string; description: string; version
 export interface Evidence {
   paper_id: string; content_version: number; chunk_id: string; quote: string;
   locator_type: string; locator_value: string;
+  span_id?: string | null; start_char?: number | null; end_char?: number | null;
 }
 export interface Finding {
   id: string; criterion_code: string; kind: string; claim: string; evidence: Evidence[];

@@ -8,7 +8,9 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents import evidence_verifier, related_work, scientific_review
 from app.agents.ports import LLMPort
-from app.agents.schemas import AgentAction
+from app.agents.schemas import (
+    AgentAction, SelectedComparisonOutput, SelectedScientificOutput,
+)
 
 
 class GraphState(TypedDict):
@@ -37,6 +39,11 @@ class AgentFactory:
             ),
         }
         schema, prompt_file = contracts[role]
+        if getattr(llm, "evidence_selection_mode", False):
+            schema = {
+                "scientific_review": SelectedScientificOutput,
+                "related_work": SelectedComparisonOutput,
+            }.get(role, schema)
         prompt = (Path(__file__).parent / "prompts" / prompt_file).read_text(
             encoding="utf-8"
         )

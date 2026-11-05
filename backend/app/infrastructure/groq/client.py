@@ -16,6 +16,8 @@ MAX_RATE_LIMIT_WAIT_SECONDS = 300
 class GroqClient:
     """Call configured Groq model without exposing credentials in failures."""
 
+    evidence_selection_mode = True
+
     def __init__(  # pylint: disable=too-many-arguments
         self,
         api_key: str,

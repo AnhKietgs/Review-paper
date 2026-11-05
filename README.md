@@ -48,6 +48,16 @@ This is conservative local accounting, not Groq's tokenizer or a guarantee again
 
 Groq reference comparisons process the selected main/reference excerpts in source pairs across checkpointed turns instead of sending four pages together. Every pair retains both papers and all initially selected excerpts are covered across the batches. `comparison_batch_completed` records progress. Runs stopped with `quota_request_too_large` can be resumed with `POST /api/v1/runs/{run_id}/resume` after reducing the oversized context; the original review revision and completed work are retained. This does not guarantee that a single exceptionally large page will fit.
 
+### Source-selected evidence
+
+Groq Scientific Review and Comparator outputs now select evidence with `chunk_id` and `span_id` only. The harness presents each approved source chunk as contiguous spans of at most 480 Unicode characters. Text appears once in the producer context; the model does not copy quotations or choose page numbers. One finding may select several spans, and comparisons still need evidence from both papers.
+
+The harness resolves the chosen IDs against the exact supplied chunks and frozen document versions, then loads the original text, paper identity, PDF page/DOCX paragraph and character positions. Canonical evidence retains `quote`, existing source/locator fields, plus `span_id`, `start_char` and `end_char`. Positions are relative to the immutable extracted chunk text, use Python Unicode code points (not bytes or JavaScript UTF-16 indices), and have an exclusive end. Source locators still refer to the original file page or paragraph.
+
+Invented IDs, unseen chunks, changed versions and unresolved locators fail resolution. The finding follows the existing bounded repair path; the system never substitutes a random span or the whole page. OutputGate independently checks the stored quote and positions; Evidence Verifier still decides semantic support. A valid source selection alone never marks a claim supported. Omission findings continue through the separate whole-paper audit.
+
+Trace events `evidence_resolved` contain the selected positions and `evidence_resolution_failed` records safe failure reasons without source text. Legacy quotes/reports and fixture clients remain readable; older records may have no span metadata. Existing completed reports are not rewritten, and cancelled runs are not restarted by this update.
+
 Page and paragraph locators come from the original PDF/DOCX extraction. Markdown formatting differences do not invalidate those original positions. For documents uploaded before this correction, `docker compose exec backend python -m app.services.source_locator_service PAPER_ID VERSION` can reconcile a saved version. The command updates only locators whose chunk text and file hash match the exact original page or paragraph; existing review reports remain unchanged, so start a new review run afterward.
 
 ## Project map

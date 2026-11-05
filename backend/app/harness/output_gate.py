@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.agents.schemas import FindingDraft
 from app.harness.state import RunScope
+from app.harness.evidence import build_spans
 
 
 class ValidationResult(BaseModel):
@@ -63,6 +64,20 @@ class OutputGate:
             ) not in normalize_quote(chunk["text"]):
                 checks["quote"] = False
                 reasons.append("quote_not_found")
+            positions = (reference.span_id, reference.start_char, reference.end_char)
+            if any(value is not None for value in positions):
+                span = next((
+                    item for item in build_spans(chunk["text"])
+                    if item["id"] == reference.span_id
+                ), None)
+                if (
+                    span is None
+                    or span["start_char"] != reference.start_char
+                    or span["end_char"] != reference.end_char
+                    or span["text"] != reference.quote
+                ):
+                    checks["quote"] = False
+                    reasons.append("source_span_mismatch")
             locator = chunk.get("locator")
             if (
                 not locator
