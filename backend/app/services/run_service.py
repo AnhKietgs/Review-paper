@@ -160,7 +160,9 @@ class RunService:
         if row is None:
             raise NotFoundError("run_missing", "Run not found")
         if row.status != "interrupted" and not (
-            row.status == "failed" and row.error_code == "rate_limited"
+            row.status == "failed" and row.error_code in {
+                "rate_limited", "quota_request_too_large",
+            }
         ):
             raise ConflictError("not_resumable", "Run cannot resume")
         row.status = "queued"

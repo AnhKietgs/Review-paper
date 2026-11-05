@@ -39,6 +39,7 @@ class RunState(BaseModel):
     max_repairs: int = 8
     analysis: dict[str, list[str]] = Field(default_factory=dict)
     reference_assessments: dict[str, dict] = Field(default_factory=dict)
+    comparison_progress: dict[str, dict] = Field(default_factory=dict)
     batch_count: int = 0
     turn_count: int = 0
     max_batches: int = 20

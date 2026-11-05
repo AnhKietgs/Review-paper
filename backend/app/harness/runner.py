@@ -189,6 +189,10 @@ class AgentRunner:
         state.current_batch_ids = []
 
     def _compare(self, state: RunState, gateway: ToolGateway, paper_id: str) -> None:
+        progress = state.comparison_progress.get(paper_id)
+        if progress is not None:
+            self._compare_batch(state, gateway, paper_id, progress)
+            return
         query = " ".join(item["claim"] for item in state.findings[:3])
         sources = gateway.execute(
             ToolCall(
@@ -206,6 +210,22 @@ class AgentRunner:
             }
             self._event(state, "related_work", "agent_skipped", "Reference unavailable")
             return
+        if state.llm_mode == "groq":
+            main_ids = state.processed_chunk_ids[:2]
+            reference_ids = [item["id"] for item in sources.data]
+            progress = {
+                "groups": [
+                    [main_ids[index % len(main_ids)],
+                     reference_ids[index % len(reference_ids)]]
+                    for index in range(max(len(main_ids), len(reference_ids)))
+                ],
+                "cursor": 0,
+                "assessments": [],
+                "chunk_ids": reference_ids,
+            }
+            state.comparison_progress[paper_id] = progress
+            self._compare_batch(state, gateway, paper_id, progress)
+            return
         context = self._context(
             state, gateway, "related_work", state.processed_chunk_ids[:2], sources.data
         )
@@ -219,6 +239,47 @@ class AgentRunner:
             state, output["findings"], "related_work",
             [item["id"] for item in context["chunks"]],
         )
+
+    def _compare_batch(self, state, gateway, paper_id, progress) -> None:
+        """Compare one source pair, checkpointing all selected pairs across turns."""
+        if not self.catalog.is_active(paper_id):
+            state.reference_assessments[paper_id] = {
+                "status": "not_assessed",
+                "reason": "Reference became unavailable between comparison batches",
+                "chunk_ids": [],
+            }
+            del state.comparison_progress[paper_id]
+            self._event(
+                state, "related_work", "agent_skipped", "Reference unavailable"
+            )
+            return
+        ids = progress["groups"][progress["cursor"]]
+        context = self._context(state, gateway, "related_work", ids)
+        output = self._invoke(state, "related_work", context)
+        self._stage(state, output["findings"], "related_work", ids)
+        progress["cursor"] += 1
+        progress["assessments"].append({
+            "status": output["assessment"], "reason": output["reason"],
+        })
+        self._event(
+            state, "related_work", "comparison_batch_completed",
+            "Compared one bounded main/reference source pair",
+            paper_id=paper_id, completed=progress["cursor"],
+            total=len(progress["groups"]), source_ids=ids,
+        )
+        if progress["cursor"] == len(progress["groups"]):
+            assessed = any(
+                item["status"] == "assessed" for item in progress["assessments"]
+            )
+            state.reference_assessments[paper_id] = {
+                "status": "assessed" if assessed else "not_assessed",
+                "reason": " | ".join(
+                    item["reason"] for item in progress["assessments"]
+                ),
+                "chunk_ids": progress["chunk_ids"],
+                "batches": progress["assessments"],
+            }
+            del state.comparison_progress[paper_id]
 
     def _verify(self, state: RunState, gateway: ToolGateway) -> None:
         valid = []

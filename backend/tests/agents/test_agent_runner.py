@@ -10,7 +10,9 @@ from app.harness.runner import AgentRunner
 from app.harness.state import RunScope, RunState
 from app.infrastructure.groq.fixture_client import FixtureClient
 from app.agents.ports import LLMFailure, RateLimitPause
-from app.agents.schemas import AgentAction, ScientificOutput, VerificationOutput
+from app.agents.schemas import (
+    AgentAction, ComparisonOutput, ScientificOutput, VerificationOutput,
+)
 
 
 class Catalog:
@@ -87,6 +89,76 @@ def test_selected_reference_has_two_sided_evidence():
         "main",
         "ref",
     }
+
+
+def test_groq_comparison_batches_keep_both_sources_and_all_selected_pages():
+    class TwoPageCatalog(Catalog):
+        def chunks(self, paper_id, _version):
+            return [self.chunk(f"{paper_id}-{index}") for index in (1, 2)]
+
+    class BoundedComparator(FixtureClient):
+        def __init__(self):
+            super().__init__()
+            self.groups = []
+
+        def generate_json(self, messages, schema):
+            context = json.loads(messages[-1]["content"])
+            if schema is ComparisonOutput:
+                chunks = context["chunks"]
+                if len(chunks) > 2:
+                    raise LLMFailure("quota_request_too_large")
+                assert {item["paper_id"] for item in chunks} == {"main", "ref"}
+                self.groups.append([item["id"] for item in chunks])
+            return super().generate_json(messages, schema)
+
+    client = BoundedComparator()
+    state, _ = execute(
+        run_state({"ref": 1}, chunks=["main-1", "main-2"], llm_mode="groq"),
+        client, TwoPageCatalog(),
+    )
+    assert state.status == "completed"
+    assert client.groups == [["main-1", "ref-1"], ["main-2", "ref-2"]]
+    assert state.reference_assessments["ref"]["chunk_ids"] == ["ref-1", "ref-2"]
+    assert state.call_counts["related_work"] == 2
+
+
+def test_comparison_batch_cursor_survives_checkpoint_reload():
+    state = run_state({"ref": 1}, llm_mode="groq")
+    state.remaining_chunk_ids = []
+    state.processed_chunk_ids = ["main-1", "main-2"]
+    memory, events = RunMemory(), RunEventRecorder()
+    runner = AgentRunner(FixtureClient(), Catalog(), memory, events)
+    memory.save(state)
+    state = runner.run_turn(state)
+    state = memory.load(state.run_id)
+    assert "ref" not in state.reference_assessments
+    assert state.comparison_progress["ref"]["cursor"] == 1
+    state, _ = execute(state)
+    assert state.status == "completed"
+    comparisons = [f for f in state.findings if f["kind"] == "comparison"]
+    assert len(comparisons) == 2
+
+
+def test_reference_deleted_between_comparison_batches_is_skipped():
+    class MutableCatalog(Catalog):
+        reference_available = True
+
+        def is_active(self, paper_id):
+            return paper_id != "ref" or self.reference_available
+
+    state = run_state({"ref": 1}, llm_mode="groq")
+    state.remaining_chunk_ids = []
+    state.processed_chunk_ids = ["main-1", "main-2"]
+    catalog = MutableCatalog()
+    memory, events = RunMemory(), RunEventRecorder()
+    memory.save(state)
+    runner = AgentRunner(FixtureClient(), catalog, memory, events)
+    state = runner.run_turn(state)  # First comparison pair.
+    state = runner.run_turn(state)  # Verify its finding.
+    catalog.reference_available = False
+    state = runner.run_turn(state)
+    assert state.reference_assessments["ref"]["status"] == "not_assessed"
+    assert "ref" not in state.comparison_progress
 
 
 def test_invalid_supervisor_action_does_not_call_worker_and_hits_budget():

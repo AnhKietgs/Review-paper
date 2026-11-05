@@ -46,6 +46,8 @@ Trace events `quota_reserved` and `quota_wait` show model, estimated input token
 
 This is conservative local accounting, not Groq's tokenizer or a guarantee against 429. It resets when the worker process restarts and cannot observe other applications consuming the same organization quota or independently predict daily/input/output-specific limits. Provider responses remain authoritative. Durable run cooldowns survive restart; distributed or multiple-worker deployments require shared persistent quota storage.
 
+Groq reference comparisons process the selected main/reference excerpts in source pairs across checkpointed turns instead of sending four pages together. Every pair retains both papers and all initially selected excerpts are covered across the batches. `comparison_batch_completed` records progress. Runs stopped with `quota_request_too_large` can be resumed with `POST /api/v1/runs/{run_id}/resume` after reducing the oversized context; the original review revision and completed work are retained. This does not guarantee that a single exceptionally large page will fit.
+
 Page and paragraph locators come from the original PDF/DOCX extraction. Markdown formatting differences do not invalidate those original positions. For documents uploaded before this correction, `docker compose exec backend python -m app.services.source_locator_service PAPER_ID VERSION` can reconcile a saved version. The command updates only locators whose chunk text and file hash match the exact original page or paragraph; existing review reports remain unchanged, so start a new review run afterward.
 
 ## Project map

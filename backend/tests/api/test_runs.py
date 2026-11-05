@@ -5,11 +5,39 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.agents.ports import RateLimitPause
+from app.agents.ports import LLMFailure, RateLimitPause
 from app.harness.memory import RunMemory
 from app.infrastructure.persistence.unit_of_work import UnitOfWork
 from app.harness.runner import AgentRunner
 from app.workers.run_worker import RunWorker
+
+
+def test_oversized_context_failure_can_resume_its_existing_checkpoint(
+    api_client, review_seed, monkeypatch,
+):
+    review = review_seed(False)
+    accepted = api_client.post(f"/api/v1/reviews/{review['id']}/runs").json()
+    worker = RunWorker()
+    worker.tick()
+    original_turn = AgentRunner.run_turn
+
+    def oversized(_self, _state):
+        raise LLMFailure("quota_request_too_large")
+
+    monkeypatch.setattr(AgentRunner, "run_turn", oversized)
+    worker.tick()
+    failed = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
+    assert failed["status"] == "failed"
+    assert failed["step_count"] == 1
+    resumed = api_client.post(f"/api/v1/runs/{accepted['run_id']}/resume")
+    assert resumed.status_code == 202
+    assert resumed.json()["run_id"] == accepted["run_id"]
+    assert resumed.json()["review_id"] == accepted["review_id"]
+    monkeypatch.setattr(AgentRunner, "run_turn", original_turn)
+    for _ in range(20):
+        worker.tick()
+    result = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
+    assert result["status"] == "completed"
 
 
 def test_queue_restart_resume_and_no_duplicate_findings(api_client, review_seed):
