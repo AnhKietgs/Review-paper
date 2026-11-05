@@ -131,7 +131,7 @@ export default function ReviewDetail() {
         <span className="mono" title={id}>Mã {id.slice(0, 8)}</span>
       </div>
       <div className="actions" aria-busy={busy}>
-        <button disabled={busy || dirty || ["queued", "running", "interrupted"].includes(review.status)} onClick={() => run("review")}>Chạy Paper Review</button>
+        <button className={["completed", "approved"].includes(review.status) ? "secondary" : undefined} disabled={busy || dirty || ["queued", "running", "interrupted"].includes(review.status)} onClick={() => run("review")}>Chạy Paper Review</button>
         {!locked && review.findings.length > 0 && <button className="secondary" disabled={busy || dirty} onClick={() => run("verify")}>Kiểm chứng bản sửa</button>}
         <button className="secondary" disabled={busy || dirty} onClick={() => act(async () => {
           const result = await api<Review>(`/reviews/${id}/revisions`, { method: "POST" });
