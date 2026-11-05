@@ -340,6 +340,7 @@ class RunWorker:
                         payload={
                             "retry_after_seconds": exc.retry_after_seconds,
                             "cooldown_until": state.cooldown_until.isoformat(),
+                            "provider_rate_limits": exc.provider_details,
                         },
                     ),
                 )

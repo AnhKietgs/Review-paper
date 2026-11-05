@@ -25,6 +25,7 @@ class LLMFailure(RuntimeError):
 class RateLimitPause(LLMFailure):
     """Retryable provider limit with a sanitized delay in seconds."""
 
-    def __init__(self, retry_after_seconds: int):
+    def __init__(self, retry_after_seconds: int, provider_details=None):
         super().__init__("rate_limited")
         self.retry_after_seconds = retry_after_seconds
+        self.provider_details = provider_details or {}

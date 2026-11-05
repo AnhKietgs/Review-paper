@@ -21,10 +21,15 @@ def test_rate_limit_wait_is_bounded_to_five_minutes_and_safe():
             "secret-token",
             response=httpx.Response(
                 429,
-                headers={"retry-after": "75"},
+                headers={
+                    "retry-after": "15",
+                    "x-ratelimit-limit-tokens": "8000",
+                    "x-ratelimit-remaining-tokens": "0",
+                    "x-ratelimit-reset-tokens": "48s",
+                },
                 request=httpx.Request("POST", "https://example.invalid"),
             ),
-            body=None,
+            body={"error": {"code": "rate_limit_exceeded", "type": "tokens"}},
         )
 
     adapter = GroqClient(
@@ -35,9 +40,17 @@ def test_rate_limit_wait_is_bounded_to_five_minutes_and_safe():
     )
     with pytest.raises(LLMFailure, match="rate_limited") as error:
         adapter.generate_json([{"role": "user", "content": "JSON please"}], AgentAction)
-    assert len(calls) == 5
-    assert waits == [75, 75, 75, 75]
+    assert len(calls) == 21
+    assert waits == [15] * 20
     assert "secret-token" not in str(error.value)
+    assert error.value.provider_details == {
+        "retry-after": "15",
+        "x-ratelimit-limit-tokens": "8000",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-tokens": "48s",
+        "error_code": "rate_limit_exceeded",
+        "error_type": "tokens",
+    }
 
 
 def test_short_retry_after_can_recover_after_more_than_two_retries():
@@ -69,7 +82,7 @@ def test_short_retry_after_can_recover_after_more_than_two_retries():
     assert waits == [10, 10, 10]
 
 
-def test_retry_after_beyond_budget_fails_without_waiting():
+def test_retry_after_beyond_budget_is_capped_to_five_minutes():
     waits = []
     calls = []
 
@@ -104,7 +117,7 @@ def test_schema_repair_shares_the_same_five_minute_wait_budget():
                 "rate limit",
                 response=httpx.Response(
                     429,
-                    headers={"retry-after": "200"},
+                    headers={"retry-after": "40"},
                     request=httpx.Request("POST", "https://example.invalid"),
                 ),
                 body=None,
@@ -115,10 +128,10 @@ def test_schema_repair_shares_the_same_five_minute_wait_budget():
         )
 
     adapter = GroqClient("key", "model", completion=completion, sleep=waits.append)
-    with pytest.raises(LLMFailure, match="rate_limited"):
+    with pytest.raises(LLMFailure, match="invalid_model_output"):
         adapter.generate_json([], AgentAction)
-    assert len(calls) == 3
-    assert waits == [200]
+    assert len(calls) == 4
+    assert waits == [40, 40]
 
 
 def test_schema_gets_only_one_repair():

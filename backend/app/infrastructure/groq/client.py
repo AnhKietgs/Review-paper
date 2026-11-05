@@ -51,6 +51,32 @@ class GroqClient:
             return self._rate_limit_wait_seconds
         return max(1, math.ceil(seconds))
 
+    @staticmethod
+    def _rate_limit_details(error: RateLimitError) -> dict[str, str]:
+        """Expose only provider quota headers useful for diagnosing a 429."""
+        allowed = (
+            "retry-after",
+            "x-ratelimit-limit-requests",
+            "x-ratelimit-limit-tokens",
+            "x-ratelimit-remaining-requests",
+            "x-ratelimit-remaining-tokens",
+            "x-ratelimit-reset-requests",
+            "x-ratelimit-reset-tokens",
+        )
+        details = {
+            name: error.response.headers[name]
+            for name in allowed
+            if name in error.response.headers
+        }
+        body = getattr(error, "body", None)
+        provider_error = body.get("error", body) if isinstance(body, dict) else None
+        if isinstance(provider_error, dict):
+            for name in ("code", "type"):
+                value = provider_error.get(name)
+                if isinstance(value, str):
+                    details[f"error_{name}"] = value[:80]
+        return details
+
     def _request(self, messages, rate_waited):
         rate_retries = 0
         json_retries = 0
@@ -69,8 +95,10 @@ class GroqClient:
             except RateLimitError as exc:
                 wait_seconds = self._retry_wait(exc)
                 if rate_waited[0] + wait_seconds > MAX_RATE_LIMIT_WAIT_SECONDS:
+                    # Preserve the provider's reset interval, capped at five minutes.
                     raise RateLimitPause(
-                        min(wait_seconds, MAX_RATE_LIMIT_WAIT_SECONDS)
+                        min(wait_seconds, MAX_RATE_LIMIT_WAIT_SECONDS),
+                        provider_details=self._rate_limit_details(exc),
                     ) from exc
                 rate_retries += 1
                 rate_waited[0] += wait_seconds

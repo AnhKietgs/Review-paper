@@ -2,12 +2,14 @@
 
 import json
 
+import pytest
+
 from app.harness.events import RunEventRecorder
 from app.harness.memory import RunMemory
 from app.harness.runner import AgentRunner
 from app.harness.state import RunScope, RunState
 from app.infrastructure.groq.fixture_client import FixtureClient
-from app.agents.ports import LLMFailure
+from app.agents.ports import LLMFailure, RateLimitPause
 from app.agents.schemas import AgentAction, ScientificOutput, VerificationOutput
 
 
@@ -293,6 +295,51 @@ def test_omission_is_deferred_until_full_document_audit():
     }
 
 
+@pytest.mark.parametrize("detail_found", [False, True])
+def test_unmentioned_ethics_limitation_requires_full_paper_audit(detail_found):
+    class EthicsClient(FixtureClient):
+        def generate_json(self, messages, schema):
+            result = super().generate_json(messages, schema)
+            context = json.loads(messages[-1]["content"])
+            if schema is ScientificOutput:
+                result.findings = (
+                    result.findings[:1]
+                    if context["chunks"][0]["id"] == "main-1" else []
+                )
+                if result.findings:
+                    finding = result.findings[0]
+                    finding.kind = "limitation"
+                    finding.claim = (
+                        "Bài báo không đề cập đến các hạn chế hoặc rủi ro đạo đức "
+                        "liên quan đến việc sử dụng AI trong giáo dục ngôn ngữ."
+                    )
+                    finding.evidence = []
+            if schema is VerificationOutput and context.get("omission_audit"):
+                result.assessments[0].status = (
+                    "supported"
+                    if detail_found and context["chunks"][-1]["id"] == "main-3"
+                    else "unsupported"
+                )
+            return result
+
+    state, events = execute(
+        run_state(chunks=["main-1", "main-2", "main-3"]), EthicsClient()
+    )
+    assert state.status == "completed"
+    audits = [e for e in events.items if e["action"] == "omission_audited"]
+    assert {chunk for e in audits for chunk in e["payload"]["source_ids"]} == {
+        "main-1", "main-2", "main-3",
+    }
+    assert state.repair_count == 0
+    if detail_found:
+        assert state.findings == []
+    else:
+        assert len(state.findings) == 1
+        assert state.findings[0]["kind"] == "omission"
+        assert state.findings[0]["status"] == "not_reported"
+        assert "sau khi rà soát 3 đoạn" in state.findings[0]["claim"]
+
+
 def test_omission_found_on_later_page_is_not_published():
     class DetailFound(FixtureClient):
         def generate_json(self, messages, schema):
@@ -323,7 +370,8 @@ def test_omission_found_on_later_page_is_not_published():
     assert any(item["action"] == "omission_refuted" for item in events.items)
 
 
-def test_incomplete_paper_never_publishes_omission():
+@pytest.mark.parametrize("wording", ["cung cấp", "đề cập đến"])
+def test_incomplete_paper_never_publishes_omission(wording):
     class OmissionClient(FixtureClient):
         def generate_json(self, messages, schema):
             result = super().generate_json(messages, schema)
@@ -331,7 +379,7 @@ def test_incomplete_paper_never_publishes_omission():
                 result.findings = result.findings[:1]
                 result.findings[0].kind = "limitation"
                 result.findings[0].claim = (
-                    "Bài báo không cung cấp thông tin chi tiết về "
+                    f"Bài báo không {wording} thông tin chi tiết về "
                     "quy trình đánh giá mô hình."
                 )
             return result
@@ -384,6 +432,29 @@ def test_invalid_supervisor_json_uses_only_eligible_action():
     assert "compare" in decisions
     assert "finish" in decisions
     assert any(item["action"] == "supervisor_fallback" for item in events.items)
+
+
+def test_supervisor_rate_limit_suspends_turn_instead_of_falling_back():
+    class RateLimitedClient(FixtureClient):
+        def generate_json(self, _messages, _schema):
+            raise RateLimitPause(60)
+
+    state = run_state()
+    memory, events = RunMemory(), RunEventRecorder()
+    runner = AgentRunner(RateLimitedClient(), Catalog(), memory, events)
+    memory.save(state)
+
+    import pytest
+
+    with pytest.raises(RateLimitPause):
+        runner.run_turn(state)
+
+    assert not any(item["action"] == "supervisor_fallback" for item in events.items)
+    assert not any(
+        item["action"] == "agent_started"
+        and item["agent"] == "scientific_review"
+        for item in events.items
+    )
 
 
 def test_omission_topics_share_each_document_scan():

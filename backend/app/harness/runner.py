@@ -4,7 +4,7 @@ import re
 from uuid import uuid4
 
 from app.agents.graph_factory import AgentFactory
-from app.agents.ports import LLMFailure
+from app.agents.ports import LLMFailure, RateLimitPause
 from app.agents.schemas import AgentAction, FindingDraft
 from app.agents.supervisor import Supervisor, eligible_actions
 from app.harness.context import ContextBuilder
@@ -94,8 +94,9 @@ class AgentRunner:
             if finding["kind"] == "limitation":
                 omission = re.match(
                     r"^(?:bài báo|nghiên cứu)\s+(?:không|chưa)\s+"
-                    r"(?:cung cấp|nêu|báo cáo|trình bày)\s+(.+)$",
-                    finding["claim"], re.IGNORECASE,
+                    r"(?:cung cấp|nêu|báo cáo|trình bày|mô tả|"
+                    r"đề cập(?:\s+(?:đến|tới))?)\s+(.+)$",
+                    finding["claim"].strip(), re.IGNORECASE,
                 )
                 if omission:
                     finding["kind"] = "omission"
@@ -419,6 +420,10 @@ class AgentRunner:
         context["omission_audit"] = True
         try:
             output = self._invoke(state, "evidence_verifier", context)
+        except RateLimitPause:
+            # Provider throttling must suspend the run, not turn an unfinished
+            # whole-paper audit into an uncertain finding.
+            raise
         except LLMFailure as exc:
             if str(exc) not in {"invalid_model_output", "rate_limited"}:
                 raise
@@ -477,6 +482,10 @@ class AgentRunner:
         state.call_counts["supervisor"] = state.call_counts.get("supervisor", 0) + 1
         try:
             action = Supervisor(self._graph("supervisor")).decide(state)
+        except RateLimitPause:
+            # A quota error is retryable and must preserve this turn's checkpoint.
+            # It is not equivalent to malformed supervisor output.
+            raise
         except LLMFailure as exc:
             if str(exc) not in {"invalid_model_output", "rate_limited"}:
                 raise
