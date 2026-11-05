@@ -1,101 +1,131 @@
-# Evidence Grounded Paper Review
+# Paper Review AI Agent
 
-Local-first MVP for reviewing one scientific paper with evidence that can be opened at its original PDF page or DOCX paragraph. The user uploads the main paper, optionally selects uploaded related work, defines a qualitative rubric and starts an AI review. The harness checks each finding, gives the original agent one bounded repair attempt when needed and creates a Markdown report automatically. Unverified findings are labeled separately. Users may inspect sources or create a new revision to edit the result.
+Hệ thống đa tác nhân AI phân tích, phản biện và đánh giá bài báo khoa học dựa trên bằng chứng. Nhận xét có thể truy về trang PDF hoặc đoạn Word gốc.
 
-The stack is FastAPI, Next.js/Node.js, LangGraph and Groq API. Four logical agents are hosted by the custom harness: Supervisor, Scientific Review, Related-Work Comparator and Evidence Verifier. The harness calls one worker at a time and controls tools, run scope, context, checkpoints, budgets and output validation. MarkItDown converts PDF/DOCX to Markdown; independent extraction resolves citations to original source positions.
+**Công nghệ:** FastAPI · Next.js/Node.js · LangGraph · Groq API · SQLite · MarkItDown · Docker Compose.
 
-## Run locally with Docker Desktop
+## Chạy thử bằng một dòng lệnh
 
-1. Install and start Docker Desktop.
-2. Copy `.env.example` to `.env`. Set `DEMO_LLM_MODE=fixture` to run without an API key. To use Groq, set `DEMO_LLM_MODE=groq` and provide `GROQ_API_KEY` in `.env`. The key is passed to the backend only. Groq models are configurable per agent with `GROQ_SUPERVISOR_MODEL`, `GROQ_SCIENTIFIC_REVIEW_MODEL`, `GROQ_RELATED_WORK_MODEL` and `GROQ_EVIDENCE_VERIFIER_MODEL`. Before each call, the worker reserves estimated input plus completion tokens in a shared per-model quota window. On a 429 it honors the full `retry-after`; five minutes bounds inline waiting only, and longer waits are saved as a durable cooldown. `GROQ_RATE_LIMIT_WAIT_SECONDS` defaults to `60` when the header is absent or invalid.
-3. From the repository root, run:
+Cài và mở **Docker Desktop**, cài **Git**. Chạy lệnh dưới trong **Git Bash, Bash hoặc PowerShell 7+**:
 
-   ```powershell
-   docker compose up --build -d
-   docker compose ps
-   ```
-
-4. Open [http://localhost:3000](http://localhost:3000). FastAPI docs are at [http://localhost:8000/docs](http://localhost:8000/docs).
-5. To load the example library, run:
-
-   ```powershell
-   docker compose exec backend python -m app.demo.seed
-   ```
-
-   The command can be run again safely. From the browser, open **Bản review**, select `Demo · Evidence Links Pilot`, the `Demo · Scientific Review` rubric and optionally `Demo · Related Study`, then create a draft and run it. Fixture mode labels every report and is only a workflow demonstration.
-6. Inspect the actual decisions, skipped agents, tool permissions, contexts, checkpoints, repair attempts and evidence-gate results in the run inspector. When the run completes, open the review and download its Markdown report. Opening a finding's source is optional.
-7. Stop the services with `docker compose down`. The `app_data` named volume keeps uploads, database records, run checkpoints and completed reports. `docker compose down -v` also deletes that volume.
-
-Useful commands:
-
-```powershell
-docker compose logs -f backend
-docker compose restart backend
-docker compose up --build -d
+```bash
+git clone https://github.com/AnhKietgs/Review-paper-b-ng-AI-Agent.git paper-review && cd paper-review && docker compose up -d --build --wait && docker compose exec -T backend python -m app.demo.seed
 ```
 
-The app is designed for one local user and one backend worker process. Scanned PDFs without a text layer are rejected; OCR, automatic web search and Literature Review are later extensions. DOCX citations point to paragraphs; PDF citations point to pages.
+Lệnh sẽ tải code vào thư mục `paper-review`, build và khởi động ứng dụng, sau đó nạp hai tài liệu và một rubric mẫu. Lần build đầu cần Internet để tải image và thư viện nên có thể mất vài phút.
 
-### Groq quota coordination
+| Địa chỉ | Chức năng |
+|---|---|
+| [localhost:3000](http://localhost:3000) | Giao diện sử dụng |
+| [localhost:8000/docs](http://localhost:8000/docs) | Swagger / tài liệu REST API |
+| [localhost:8000/api/v1/health](http://localhost:8000/api/v1/health) | Kiểm tra backend |
 
-`GROQ_TOKENS_PER_MINUTE=8000` and `GROQ_REQUESTS_PER_MINUTE=30` configure the default local rolling 60-second limit for each model. Set these to your account's actual limits, then recreate the backend with `docker compose up -d --build backend`. Supervisor, Comparator and Verifier share the same bucket when configured with the same model. The worker retains its coordinator across turns and runs, even though individual adapters are rebuilt.
+**Mặc định sau khi clone:** không cần `.env` hay API key; Docker chạy chế độ `fixture` với kết quả mô phỏng để thử quy trình. Muốn nhận xét do AI thật sinh ra, cấu hình Groq theo phần bên dưới. Các cổng **3000** và **8000** cần còn trống.
 
-Input estimates include prompts, context, schema JSON and chat overhead, using UTF-8 bytes rather than plain character counts. Completion tokens are reserved before sending and reconciled with actual usage afterward. When necessary the completion budget is reduced to fit the window, leaving a 128-token margin and at least 1,024 output tokens (or a role's smaller configured budget). Sources are never cut to fit. Requests that cannot fit this minimum fail with `quota_request_too_large` rather than waiting indefinitely; they need smaller contexts. A smaller completion budget can still yield invalid/incomplete JSON, which remains subject to the adapter's bounded repair and validation.
+Nếu đã tải code về, mở terminal tại thư mục có `compose.yaml` và chạy:
 
-Trace events `quota_reserved` and `quota_wait` show model, estimated input tokens, reserved output tokens and wait seconds without prompts or credentials. Failed 429 attempts release their token reservation but still count toward local RPM; the provider's deadline blocks all clients sharing that model. A `Retry-After: 381` is never retried after only 300 seconds: it becomes a checkpoint cooldown of 381 seconds.
+```bash
+docker compose up -d --build --wait
+```
 
-This is conservative local accounting, not Groq's tokenizer or a guarantee against 429. It resets when the worker process restarts and cannot observe other applications consuming the same organization quota or independently predict daily/input/output-specific limits. Provider responses remain authoritative. Durable run cooldowns survive restart; distributed or multiple-worker deployments require shared persistent quota storage.
+Lệnh seed chỉ tạo dữ liệu mẫu, có thể chạy lại an toàn và không bắt buộc khi bạn tự tải paper/tạo rubric.
 
-Groq reference comparisons process the selected main/reference excerpts in source pairs across checkpointed turns instead of sending four pages together. Every pair retains both papers and all initially selected excerpts are covered across the batches. `comparison_batch_completed` records progress. Runs stopped with `quota_request_too_large` can be resumed with `POST /api/v1/runs/{run_id}/resume` after reducing the oversized context; the original review revision and completed work are retained. This does not guarantee that a single exceptionally large page will fit.
+## Thử một lượt review
 
-### Source-selected evidence
+1. Mở **Bản review** và tạo bản mới.
+2. Chọn paper chính `Demo · Evidence Links Pilot` và rubric `Demo · Scientific Review`.
+3. Có thể chọn thêm `Demo · Related Study` làm công trình đối chiếu.
+4. Bắt đầu review, theo dõi agent và các bước xử lý trong màn hình tiến trình.
+5. Khi hoàn tất, mở bản review, xem trích dẫn nguồn và tải báo cáo Markdown.
 
-Groq Scientific Review and Comparator outputs now select evidence with `chunk_id` and `span_id` only. The harness presents each approved source chunk as contiguous spans of at most 480 Unicode characters. Text appears once in the producer context; the model does not copy quotations or choose page numbers. One finding may select several spans, and comparisons still need evidence from both papers.
+Bạn cũng có thể tải **PDF có lớp văn bản hoặc DOCX** trong **Thư viện paper**, tạo tiêu chí trong **Rubric đánh giá** rồi review tài liệu của mình. PDF scan chưa có OCR.
 
-The harness resolves the chosen IDs against the exact supplied chunks and frozen document versions, then loads the original text, paper identity, PDF page/DOCX paragraph and character positions. Canonical evidence retains `quote`, existing source/locator fields, plus `span_id`, `start_char` and `end_char`. Positions are relative to the immutable extracted chunk text, use Python Unicode code points (not bytes or JavaScript UTF-16 indices), and have an exclusive end. Source locators still refer to the original file page or paragraph.
+## Chạy AI thật bằng Groq
 
-Invented IDs, unseen chunks, changed versions and unresolved locators fail resolution. The finding follows the existing bounded repair path; the system never substitutes a random span or the whole page. OutputGate independently checks the stored quote and positions; Evidence Verifier still decides semantic support. A valid source selection alone never marks a claim supported. Omission findings continue through the separate whole-paper audit.
+1. Sao chép `.env.example` thành `.env` tại thư mục gốc dự án.
+2. Mở `.env` và điền:
 
-Trace events `evidence_resolved` contain the selected positions and `evidence_resolution_failed` records safe failure reasons without source text. Legacy quotes/reports and fixture clients remain readable; older records may have no span metadata. Existing completed reports are not rewritten, and cancelled runs are not restarted by this update.
+   ```dotenv
+   DEMO_LLM_MODE=groq
+   GROQ_API_KEY=YOUR_GROQ_API_KEY
+   ```
 
-Page and paragraph locators come from the original PDF/DOCX extraction. Markdown formatting differences do not invalidate those original positions. For documents uploaded before this correction, `docker compose exec backend python -m app.services.source_locator_service PAPER_ID VERSION` can reconcile a saved version. The command updates only locators whose chunk text and file hash match the exact original page or paragraph; existing review reports remain unchanged, so start a new review run afterward.
+3. Áp dụng cấu hình backend:
 
-## Project map
+   ```bash
+   docker compose up -d --force-recreate backend
+   ```
+
+4. Tạo lượt review mới trong giao diện.
+
+Docker đọc **`.env`**; sửa riêng `.env.example` sẽ không cập nhật cấu hình đang chạy. `.env` đã được Git bỏ qua; giữ API key trong file này.
+
+| Agent | Model mặc định |
+|---|---|
+| Supervisor | `openai/gpt-oss-20b` |
+| Scientific Review | `openai/gpt-oss-120b` |
+| Related-Work Comparator | `openai/gpt-oss-20b` |
+| Evidence Verifier | `openai/gpt-oss-20b` |
+
+Tên biến đổi model nằm trong `.env.example`. Bộ điều phối quota mặc định dùng `GROQ_TOKENS_PER_MINUTE=8000` và `GROQ_REQUESTS_PER_MINUTE=30` cho mỗi model; điều chỉnh theo tài khoản của bạn. Nếu Groq trả 429, app giữ checkpoint và chờ theo `Retry-After`. Hạn mức token theo ngày vẫn có thể khiến thời gian chờ dài.
+
+## Các lệnh thường dùng
+
+Chạy tại thư mục gốc dự án:
+
+| Việc cần làm | Lệnh |
+|---|---|
+| Xem trạng thái | `docker compose ps` |
+| Xem log backend | `docker compose logs -f backend` |
+| Build lại sau khi cập nhật code | `docker compose up -d --build --wait` |
+| Nạp dữ liệu mẫu | `docker compose exec -T backend python -m app.demo.seed` |
+| Dừng ứng dụng, giữ dữ liệu | `docker compose down` |
+
+Dữ liệu được lưu trong Docker volume `app_data`. Lệnh `docker compose down -v` sẽ xóa cả dữ liệu trong volume.
+
+## Cách hệ thống hoạt động
+
+**Tải tài liệu → trích xuất nội dung → chọn rubric và paper đối chiếu → Supervisor điều phối agent cần thiết → kiểm tra nguồn và bằng chứng → xuất báo cáo.**
+
+Mini harness quản lý loop, tool, memory/checkpoint, context, permission, quota và output gate. Agent chọn `chunk_id` + `span_id`; hệ thống tự lấy nguyên văn trích dẫn, vị trí ký tự và trang/đoạn gốc. Evidence Verifier đánh giá bằng chứng có hỗ trợ nhận xét hay không. Nhận xét chưa đủ bằng chứng được ghi rõ trạng thái.
+
+MVP chạy local với một backend worker. Paper đối chiếu do người dùng tải lên và lựa chọn; Literature Review và tìm kiếm Internet là hướng mở rộng.
+
+## Cấu trúc và tài liệu
 
 ```text
-backend/app/api/v1/          FastAPI controllers and Pydantic views
-backend/app/domain/          Domain models, repository ports and policies
-backend/app/services/        CRUD, run orchestration and report export
-backend/app/infrastructure/  SQLAlchemy, SQLite, local files, Groq/fixture
-backend/app/ingestion/       MarkItDown and original-source locators
-backend/app/agents/          Four LangGraph agent contracts and prompts
-backend/app/harness/         Loop, state, tools, context, permissions, gate
-backend/app/workers/         Single local checkpointed worker
-frontend/src/app/            Library, rubric, review and run inspector
-demo_data/                   Small generated PDF/DOCX fixture documents
-docs/architecture/           MVC/MVT and harness diagrams
-docs/api/                     REST resource contract
+backend/app/api/             REST controllers và schema
+backend/app/domain/          Domain models và policies
+backend/app/services/        CRUD, quản lý review và xuất báo cáo
+backend/app/infrastructure/  Database, lưu file và Groq adapter
+backend/app/ingestion/       Chuyển đổi PDF/DOCX và định vị nguồn
+backend/app/agents/          Agent contracts, prompts và LangGraph
+backend/app/harness/         Điều phối, context, permission và kiểm chứng
+backend/app/workers/         Worker xử lý review
+frontend/src/               Giao diện Next.js
+demo_data/                  Tài liệu và dữ liệu demo
+docs/                       Tài liệu API và kiến trúc
 ```
 
-## Development checks
+Xem thêm [MVC/MVT và design patterns](docs/architecture/mvc.md), [thiết kế harness](docs/architecture/harness.md) và [REST API](docs/api/rest-contract.md).
 
-Backend commands (run from repository root):
+## Kiểm tra khi phát triển
 
-```powershell
+Backend — chạy tại thư mục gốc, cần Python 3.12+:
+
+```bash
 python -m pip install -e "./backend[dev]"
-$env:PYTHONPATH = "backend"
-pytest backend/tests -q
-pylint backend/app --rcfile=backend/pyproject.toml
-pycodestyle backend/app backend/tests backend/migrations
+python -m pytest -c backend/pyproject.toml backend/tests -q
+python -m pylint backend/app --rcfile=backend/pyproject.toml
+python -m pycodestyle backend/app backend/tests backend/migrations
 ```
 
-Frontend commands (run in `frontend/`):
+Frontend — chạy trong thư mục `frontend`, cần Node.js/npm:
 
-```powershell
+```bash
 npm ci
 npm run lint
 npm run build
-npm run test:e2e
 ```
 
-Playwright's end-to-end flow needs the fixture backend and Next.js running at ports 8000 and 3000. Start Compose in fixture mode, then run `npm run test:e2e` in another terminal under `frontend/`. No Groq key is required. See [MVC/MVT and patterns](docs/architecture/mvc.md), [harness design](docs/architecture/harness.md), [REST contract](docs/api/rest-contract.md), [approved design](docs/superpowers/specs/2026-10-26-ai-paper-review-design.md) and [step-by-step plan](docs/superpowers/plans/2026-10-26-paper-review-mvp.md).
+Để chạy kiểm tra trình duyệt: cài browser bằng `npx playwright install chromium`, khởi động ứng dụng ở chế độ `fixture`, rồi chạy `npm run test:e2e` trong `frontend`.
