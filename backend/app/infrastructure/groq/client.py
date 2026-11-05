@@ -8,6 +8,7 @@ from groq import APIError, Groq, RateLimitError
 from pydantic import ValidationError
 
 from app.agents.ports import LLMFailure, RateLimitPause
+from app.infrastructure.groq.quota import GroqQuota, estimate_input_tokens
 
 MAX_RATE_LIMIT_WAIT_SECONDS = 300
 
@@ -15,7 +16,7 @@ MAX_RATE_LIMIT_WAIT_SECONDS = 300
 class GroqClient:
     """Call configured Groq model without exposing credentials in failures."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         api_key: str,
         model: str,
@@ -24,6 +25,9 @@ class GroqClient:
         on_retry=None,
         rate_limit_wait_seconds: int = 60,
         max_completion_tokens: int = 4096,
+        *,
+        quota: GroqQuota | None = None,
+        on_quota=None,
     ):
         self.model = model
         self._completion = (
@@ -38,6 +42,8 @@ class GroqClient:
         self._on_retry = on_retry
         self._rate_limit_wait_seconds = max(1, rate_limit_wait_seconds)
         self._max_completion_tokens = max(1, max_completion_tokens)
+        self._quota = quota
+        self._on_quota = on_quota
         self.usage = {"calls": 0, "tokens": 0}
 
     def _retry_wait(self, error: RateLimitError) -> int:
@@ -77,10 +83,54 @@ class GroqClient:
                     details[f"error_{name}"] = value[:80]
         return details
 
+    def _completion_budget(self, input_tokens: int) -> int:
+        """Fit a useful completion into a whole quota window without cutting sources."""
+        if self._quota is None:
+            return self._max_completion_tokens
+        available = self._quota.tokens_per_minute - input_tokens - 128
+        if available < min(1024, self._max_completion_tokens):
+            raise LLMFailure("quota_request_too_large")
+        return min(self._max_completion_tokens, available)
+
+    def _quota_event(self, input_tokens, output_tokens, wait_seconds=0) -> None:
+        if self._on_quota:
+            self._on_quota({
+                "model": self.model,
+                "estimated_input_tokens": input_tokens,
+                "reserved_output_tokens": output_tokens,
+                "wait_seconds": wait_seconds,
+            })
+
+    def _wait(self, pause: RateLimitPause, rate_waited: list, attempt: int) -> None:
+        """Bound inline waiting without shortening the provider's next deadline."""
+        seconds = pause.retry_after_seconds
+        if rate_waited[0] + seconds > MAX_RATE_LIMIT_WAIT_SECONDS:
+            raise pause
+        rate_waited[0] += seconds
+        if self._on_retry:
+            self._on_retry(attempt, seconds)
+        self._sleep(seconds)
+
     def _request(self, messages, rate_waited):
         rate_retries = 0
         json_retries = 0
+        input_tokens = estimate_input_tokens(messages)
+        output_tokens = self._completion_budget(input_tokens)
         while True:
+            reservation = None
+            if self._quota:
+                try:
+                    reservation = self._quota.reserve(
+                        self.model, input_tokens + output_tokens
+                    )
+                except RateLimitPause as pause:
+                    self._quota_event(
+                        input_tokens, output_tokens, pause.retry_after_seconds
+                    )
+                    rate_retries += 1
+                    self._wait(pause, rate_waited, rate_retries)
+                    continue
+                self._quota_event(input_tokens, output_tokens)
             try:
                 self.usage["calls"] += 1
                 response = self._completion(
@@ -88,23 +138,23 @@ class GroqClient:
                     messages=messages,
                     response_format={"type": "json_object"},
                     temperature=0,
-                    max_completion_tokens=self._max_completion_tokens,
+                    max_completion_tokens=output_tokens,
                 )
-                self.usage["tokens"] += getattr(response.usage, "total_tokens", 0) or 0
+                tokens = getattr(response.usage, "total_tokens", 0) or 0
+                self.usage["tokens"] += tokens
+                if reservation is not None and tokens > 0:
+                    self._quota.reconcile(reservation, tokens)
                 return response.choices[0].message.content
             except RateLimitError as exc:
                 wait_seconds = self._retry_wait(exc)
-                if rate_waited[0] + wait_seconds > MAX_RATE_LIMIT_WAIT_SECONDS:
-                    # Preserve the provider's reset interval, capped at five minutes.
-                    raise RateLimitPause(
-                        min(wait_seconds, MAX_RATE_LIMIT_WAIT_SECONDS),
-                        provider_details=self._rate_limit_details(exc),
-                    ) from exc
+                if reservation is not None:
+                    self._quota.reconcile(reservation, 0)
+                    self._quota.defer(self.model, wait_seconds)
                 rate_retries += 1
-                rate_waited[0] += wait_seconds
-                if self._on_retry:
-                    self._on_retry(rate_retries, wait_seconds)
-                self._sleep(wait_seconds)
+                self._wait(
+                    RateLimitPause(wait_seconds, self._rate_limit_details(exc)),
+                    rate_waited, rate_retries,
+                )
             except APIError as exc:
                 if getattr(exc, "status_code", None) == 413:
                     raise LLMFailure("request_too_large") from exc

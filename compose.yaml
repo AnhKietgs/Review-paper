@@ -10,6 +10,8 @@ services:
       GROQ_RELATED_WORK_MODEL: ${GROQ_RELATED_WORK_MODEL:-openai/gpt-oss-20b}
       GROQ_EVIDENCE_VERIFIER_MODEL: ${GROQ_EVIDENCE_VERIFIER_MODEL:-openai/gpt-oss-20b}
       GROQ_RATE_LIMIT_WAIT_SECONDS: ${GROQ_RATE_LIMIT_WAIT_SECONDS:-60}
+      GROQ_TOKENS_PER_MINUTE: ${GROQ_TOKENS_PER_MINUTE:-8000}
+      GROQ_REQUESTS_PER_MINUTE: ${GROQ_REQUESTS_PER_MINUTE:-30}
     volumes:
       - app_data:/app/data
       - ./demo_data:/app/demo_data:ro

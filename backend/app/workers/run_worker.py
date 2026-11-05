@@ -14,6 +14,7 @@ from app.harness.runner import AgentRunner
 from app.infrastructure.groq.client import GroqClient
 from app.infrastructure.groq.fixture_client import FixtureClient
 from app.infrastructure.groq.router import GroqRouter
+from app.infrastructure.groq.quota import GroqQuota
 from app.infrastructure.persistence.orm_models import FindingRow, ReviewRow, RunRow
 from app.infrastructure.persistence.source_catalog import SqlSourceCatalog
 from app.infrastructure.persistence.unit_of_work import UnitOfWork
@@ -63,6 +64,54 @@ class RunWorker:
     def __init__(self):
         self.stop_event = Event()
         self.thread = None
+        settings = Settings.from_env()
+        self.quota = GroqQuota(
+            tokens_per_minute=settings.groq_tokens_per_minute,
+            requests_per_minute=settings.groq_requests_per_minute,
+        )
+
+    def _create_groq_router(self, settings, run_id, events):
+        """Rebuild adapters while keeping one shared model quota across turns."""
+        def retry_event(role):
+            def record(attempt, wait_seconds):
+                events.append(run_id, RunEventInput(
+                    agent=role, action="provider_retry",
+                    output_summary=(
+                        f"Waiting for quota {wait_seconds}s, then retry {attempt}"
+                    ),
+                    payload={"wait_seconds": wait_seconds},
+                ))
+            return record
+
+        def quota_event(role):
+            def record(payload):
+                waiting = payload["wait_seconds"] > 0
+                events.append(run_id, RunEventInput(
+                    agent=role,
+                    action="quota_wait" if waiting else "quota_reserved",
+                    output_summary=(
+                        f"Waiting {payload['wait_seconds']}s for shared model quota"
+                        if waiting else "Input estimate + output budget reserved"
+                    ),
+                    payload=payload,
+                ))
+            return record
+
+        models = {
+            "supervisor": (settings.groq_supervisor_model, 256),
+            "scientific_review": (settings.groq_scientific_review_model, 3072),
+            "related_work": (settings.groq_related_work_model, 2048),
+            "evidence_verifier": (settings.groq_evidence_verifier_model, 4096),
+        }
+        return GroqRouter({
+            role: GroqClient(
+                settings.groq_api_key, model,
+                rate_limit_wait_seconds=settings.groq_rate_limit_wait_seconds,
+                max_completion_tokens=budget, on_retry=retry_event(role),
+                quota=self.quota, on_quota=quota_event(role),
+            )
+            for role, (model, budget) in models.items()
+        })
 
     @staticmethod
     def _freeze_review(session, review: ReviewRow, state) -> None:
@@ -278,50 +327,7 @@ class RunWorker:
                 if state.llm_mode == "groq":
                     if not settings.groq_api_key:
                         raise LLMFailure("missing_groq_key")
-
-                    def retry_event(role: str):
-                        def record(attempt: int, wait_seconds: int) -> None:
-                            events.append(
-                                run_id,
-                                RunEventInput(
-                                    agent=role,
-                                    action="provider_retry",
-                                    output_summary=(
-                                        f"Rate limited; waiting {wait_seconds}s, "
-                                        f"then retry {attempt}"
-                                    ),
-                                    payload={"wait_seconds": wait_seconds},
-                                ),
-                            )
-
-                        return record
-
-                    models = {
-                        "supervisor": settings.groq_supervisor_model,
-                        "scientific_review": settings.groq_scientific_review_model,
-                        "related_work": settings.groq_related_work_model,
-                        "evidence_verifier": settings.groq_evidence_verifier_model,
-                    }
-                    completion_budgets = {
-                        "supervisor": 256,
-                        "scientific_review": 3072,
-                        "related_work": 2048,
-                        "evidence_verifier": 4096,
-                    }
-                    llm = GroqRouter(
-                        {
-                            role: GroqClient(
-                                settings.groq_api_key,
-                                model,
-                                rate_limit_wait_seconds=(
-                                    settings.groq_rate_limit_wait_seconds
-                                ),
-                                max_completion_tokens=completion_budgets[role],
-                                on_retry=retry_event(role),
-                            )
-                            for role, model in models.items()
-                        }
-                    )
+                    llm = self._create_groq_router(settings, run_id, events)
                 state = AgentRunner(llm, catalog, memory, events).run_turn(state)
             except RateLimitPause as exc:
                 state = original

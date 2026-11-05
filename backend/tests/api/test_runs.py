@@ -3,6 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.agents.ports import RateLimitPause
 from app.harness.memory import RunMemory
 from app.infrastructure.persistence.unit_of_work import UnitOfWork
@@ -57,8 +59,9 @@ def test_concurrent_start_for_same_review_is_serialized(api_client, review_seed)
     )
 
 
+@pytest.mark.parametrize("pause_seconds", [60, 381])
 def test_rate_limit_cools_down_and_continues_same_checkpoint(
-    api_client, review_seed, monkeypatch
+    api_client, review_seed, monkeypatch, pause_seconds
 ):
     review = review_seed(False)
     run_id = api_client.post(
@@ -70,7 +73,7 @@ def test_rate_limit_cools_down_and_continues_same_checkpoint(
     def limited_once(self, state):
         attempts.append(1)
         if len(attempts) == 1:
-            raise RateLimitPause(60)
+            raise RateLimitPause(pause_seconds)
         return original_turn(self, state)
 
     monkeypatch.setattr(AgentRunner, "run_turn", limited_once)
@@ -81,6 +84,8 @@ def test_rate_limit_cools_down_and_continues_same_checkpoint(
     assert paused["step_count"] == 0
     assert paused["error_code"] is None
     assert paused["cooldown_until"] is not None
+    deadline = datetime.fromisoformat(paused["cooldown_until"].replace("Z", "+00:00"))
+    assert (deadline - datetime.now(timezone.utc)).total_seconds() > pause_seconds - 5
     assert not worker.tick()
     assert len(attempts) == 1
     worker.recover_interrupted()

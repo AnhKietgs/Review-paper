@@ -18,6 +18,8 @@ class Settings:
     groq_related_work_model: str
     groq_evidence_verifier_model: str
     groq_rate_limit_wait_seconds: int
+    groq_tokens_per_minute: int = 8000
+    groq_requests_per_minute: int = 30
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -43,5 +45,11 @@ class Settings:
             ),
             groq_rate_limit_wait_seconds=max(
                 1, int(os.getenv("GROQ_RATE_LIMIT_WAIT_SECONDS", "60"))
+            ),
+            groq_tokens_per_minute=max(
+                1, int(os.getenv("GROQ_TOKENS_PER_MINUTE", "8000"))
+            ),
+            groq_requests_per_minute=max(
+                1, int(os.getenv("GROQ_REQUESTS_PER_MINUTE", "30"))
             ),
         )

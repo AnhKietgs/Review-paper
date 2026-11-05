@@ -7,7 +7,7 @@ The stack is FastAPI, Next.js/Node.js, LangGraph and Groq API. Four logical agen
 ## Run locally with Docker Desktop
 
 1. Install and start Docker Desktop.
-2. Copy `.env.example` to `.env`. The default `DEMO_LLM_MODE=fixture` runs without an API key. To use Groq, set `DEMO_LLM_MODE=groq` and provide `GROQ_API_KEY` in `.env`. The key is passed to the backend only. Groq models are configurable per agent with `GROQ_SUPERVISOR_MODEL`, `GROQ_SCIENTIFIC_REVIEW_MODEL`, `GROQ_RELATED_WORK_MODEL` and `GROQ_EVIDENCE_VERIFIER_MODEL`. On a 429 response, the worker follows Groq's `retry-after` header and retries while the cumulative wait remains within five minutes. `GROQ_RATE_LIMIT_WAIT_SECONDS` defaults to `60` when the header is absent or invalid.
+2. Copy `.env.example` to `.env`. Set `DEMO_LLM_MODE=fixture` to run without an API key. To use Groq, set `DEMO_LLM_MODE=groq` and provide `GROQ_API_KEY` in `.env`. The key is passed to the backend only. Groq models are configurable per agent with `GROQ_SUPERVISOR_MODEL`, `GROQ_SCIENTIFIC_REVIEW_MODEL`, `GROQ_RELATED_WORK_MODEL` and `GROQ_EVIDENCE_VERIFIER_MODEL`. Before each call, the worker reserves estimated input plus completion tokens in a shared per-model quota window. On a 429 it honors the full `retry-after`; five minutes bounds inline waiting only, and longer waits are saved as a durable cooldown. `GROQ_RATE_LIMIT_WAIT_SECONDS` defaults to `60` when the header is absent or invalid.
 3. From the repository root, run:
 
    ```powershell
@@ -35,6 +35,16 @@ docker compose up --build -d
 ```
 
 The app is designed for one local user and one backend worker process. Scanned PDFs without a text layer are rejected; OCR, automatic web search and Literature Review are later extensions. DOCX citations point to paragraphs; PDF citations point to pages.
+
+### Groq quota coordination
+
+`GROQ_TOKENS_PER_MINUTE=8000` and `GROQ_REQUESTS_PER_MINUTE=30` configure the default local rolling 60-second limit for each model. Set these to your account's actual limits, then recreate the backend with `docker compose up -d --build backend`. Supervisor, Comparator and Verifier share the same bucket when configured with the same model. The worker retains its coordinator across turns and runs, even though individual adapters are rebuilt.
+
+Input estimates include prompts, context, schema JSON and chat overhead, using UTF-8 bytes rather than plain character counts. Completion tokens are reserved before sending and reconciled with actual usage afterward. When necessary the completion budget is reduced to fit the window, leaving a 128-token margin and at least 1,024 output tokens (or a role's smaller configured budget). Sources are never cut to fit. Requests that cannot fit this minimum fail with `quota_request_too_large` rather than waiting indefinitely; they need smaller contexts. A smaller completion budget can still yield invalid/incomplete JSON, which remains subject to the adapter's bounded repair and validation.
+
+Trace events `quota_reserved` and `quota_wait` show model, estimated input tokens, reserved output tokens and wait seconds without prompts or credentials. Failed 429 attempts release their token reservation but still count toward local RPM; the provider's deadline blocks all clients sharing that model. A `Retry-After: 381` is never retried after only 300 seconds: it becomes a checkpoint cooldown of 381 seconds.
+
+This is conservative local accounting, not Groq's tokenizer or a guarantee against 429. It resets when the worker process restarts and cannot observe other applications consuming the same organization quota or independently predict daily/input/output-specific limits. Provider responses remain authoritative. Durable run cooldowns survive restart; distributed or multiple-worker deployments require shared persistent quota storage.
 
 Page and paragraph locators come from the original PDF/DOCX extraction. Markdown formatting differences do not invalidate those original positions. For documents uploaded before this correction, `docker compose exec backend python -m app.services.source_locator_service PAPER_ID VERSION` can reconcile a saved version. The command updates only locators whose chunk text and file hash match the exact original page or paragraph; existing review reports remain unchanged, so start a new review run afterward.
 
