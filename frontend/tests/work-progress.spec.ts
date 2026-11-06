@@ -68,3 +68,13 @@ test("work counters fit a small screen and retain readable labels", async ({ pag
   await page.setViewportSize({ width: 1440, height: 1100 });
   await page.screenshot({ path: "../tmp/ui-work-progress-desktop.png", fullPage: true });
 });
+
+test("oversized request can be resumed from its saved checkpoint after a fix", async ({ page }) => {
+  await page.route("**/api/v1/runs/work-run/events?after=*", route => route.fulfill({ json: { items: [] } }));
+  await page.route("**/api/v1/runs/work-run", route => route.fulfill({ json: {
+    ...initial, status: "failed", error_code: "quota_request_too_large",
+    activity: { ...activity("failed"), source: "checkpoint" },
+  } }));
+  await page.goto("/runs/work-run");
+  await expect(page.getByRole("button", { name: "Tiếp tục từ checkpoint" })).toBeVisible();
+});

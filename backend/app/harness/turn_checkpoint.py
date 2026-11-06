@@ -31,6 +31,9 @@ def reusable_context(state, role, source_ids, catalog) -> dict | None:
         or "read_chunks" not in TOOL_ALLOWLIST.get(role, set())
     ):
         return None
+    saved_ids = [chunk["id"] for chunk in progress.context["chunks"]]
+    if len(saved_ids) != len(set(saved_ids)):
+        return None
     for saved in progress.context["chunks"]:
         current = catalog.chunk(saved["id"])
         if current is None or not catalog.is_active(current["paper_id"]):

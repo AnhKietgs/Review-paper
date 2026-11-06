@@ -661,6 +661,50 @@ def test_legacy_checkpoint_has_no_unfinished_turn():
     assert RunState.model_validate(saved).turn_progress is None
 
 
+def test_context_deduplicates_sources_across_ids_and_extra():
+    from app.harness.tool_gateway import ToolGateway
+
+    memory, events = RunMemory(), RunEventRecorder()
+    runner = AgentRunner(FixtureClient(), Catalog(), memory, events)
+    state = run_state()
+    context = runner._context(
+        state, ToolGateway(runner.catalog, events, state.run_id),
+        "scientific_review", ["main-1", "main-1"],
+        [runner.catalog.chunk("main-1")],
+    )
+    assert [item["id"] for item in context["chunks"]] == ["main-1"]
+    reads = [e for e in events.items if e["tool"] == "read_chunks"]
+    assert reads[0]["payload"]["source_ids"] == ["main-1"]
+
+
+@pytest.mark.parametrize("saved_ids", [["main-1"], ["main-1", "main-1"]])
+def test_legacy_duplicate_repair_context_is_rebuilt_before_resume(saved_ids):
+    from app.harness.state import TurnProgress
+    from app.harness.tool_gateway import ToolGateway
+
+    memory, events = RunMemory(), RunEventRecorder()
+    runner = AgentRunner(FixtureClient(), Catalog(), memory, events)
+    state = run_state()
+    duplicate = runner.catalog.chunk("main-1")
+    state.turn_progress = TurnProgress(
+        action=AgentAction(action="repair", reason="Resume repair"),
+        context_role="scientific_review", source_ids=saved_ids,
+        context={
+            "scope": state.scope.model_dump(),
+            "chunks": [duplicate, duplicate],
+            "repair_request": {"claim": "old"},
+        },
+    )
+    memory.save(state)
+    context = runner._context(
+        state, ToolGateway(runner.catalog, events, state.run_id),
+        "scientific_review", ["main-1", "main-1"],
+    )
+    assert len(context["chunks"]) == 1
+    assert state.turn_progress.source_ids == ["main-1"]
+    assert any(e["action"] == "context_built" for e in events.items)
+
+
 def test_omission_topics_share_each_document_scan():
     class SeveralTopics(FixtureClient):
         def __init__(self):

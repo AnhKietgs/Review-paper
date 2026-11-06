@@ -129,7 +129,10 @@ class AgentRunner:
             return
         state.repair_attempted_ids.append(finding["id"])
         state.repair_queue.append(
-            {"finding_id": finding["id"], "role": role, "source_ids": source_ids}
+            {
+                "finding_id": finding["id"], "role": role,
+                "source_ids": list(dict.fromkeys(source_ids)),
+            }
         )
         self._event(
             state, "harness", "repair_queued", "One bounded repair attempt",
@@ -292,7 +295,9 @@ class AgentRunner:
         ids: list[str],
         extra: list[dict] | None = None,
     ) -> dict:
-        source_ids = ids + [item["id"] for item in (extra or [])]
+        source_ids = list(dict.fromkeys(
+            ids + [item["id"] for item in (extra or [])]
+        ))
         cached = reusable_context(state, role, source_ids, self.catalog)
         if cached is not None:
             self._event(state, "context", "context_reused", f"Context for {role}")
@@ -301,7 +306,9 @@ class AgentRunner:
             state.turn_progress.context = None
             state.turn_progress.output = None
         result = gateway.execute(
-            ToolCall(agent=role, name="read_chunks", arguments={"chunk_ids": ids}),
+            ToolCall(
+                agent=role, name="read_chunks", arguments={"chunk_ids": source_ids},
+            ),
             state.scope,
         )
         if not result.allowed:
@@ -310,7 +317,7 @@ class AgentRunner:
             ToolCall(agent="supervisor", name="read_rubric"), state.scope
         )
         context = self.context_builder.build(
-            state, result.data + (extra or []), rubric.data,
+            state, result.data, rubric.data,
             include_spans=self._selects_evidence(role),
         )
         self._event(
