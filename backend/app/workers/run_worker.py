@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 from app.agents.ports import LLMFailure, RateLimitPause
 from app.core.config import Settings
 from app.harness.events import RunEventInput, RunEventRecorder
+from app.harness.activity import LIVE_ACTIVITY
 from app.harness.memory import RunMemory
 from app.harness.output_gate import OutputGate
 from app.harness.runner import AgentRunner
@@ -309,6 +310,7 @@ class RunWorker:
         """Claim or advance one run; concurrent ticks do no work."""
         if not TURN_LOCK.acquire(blocking=False):  # pylint: disable=consider-using-with
             return False
+        run_id = None
         try:
             run_id = self._claim()
             if run_id is None:
@@ -318,8 +320,11 @@ class RunWorker:
                 state.cooldown_until = None
                 original_steps = state.turn_count
                 catalog = SnapshotCatalog(SqlSourceCatalog(unit.session), state.scope)
-            original = state.model_copy(deep=True)
-            memory, events = RunMemory(), RunEventRecorder()
+            memory = RunMemory()
+            events = RunEventRecorder(
+                on_event=lambda _run_id, event: LIVE_ACTIVITY.publish(state, event),
+            )
+            LIVE_ACTIVITY.publish(state)
             memory.save(state)
             settings = Settings.from_env()
             llm = FixtureClient()
@@ -330,7 +335,7 @@ class RunWorker:
                     llm = self._create_groq_router(settings, run_id, events)
                 state = AgentRunner(llm, catalog, memory, events).run_turn(state)
             except RateLimitPause as exc:
-                state = original
+                state = memory.load(run_id)
                 state.cooldown_until = datetime.now(timezone.utc) + timedelta(
                     seconds=exc.retry_after_seconds
                 )
@@ -347,12 +352,16 @@ class RunWorker:
                             "retry_after_seconds": exc.retry_after_seconds,
                             "cooldown_until": state.cooldown_until.isoformat(),
                             "provider_rate_limits": exc.provider_details,
+                            "resume_action": (
+                                state.turn_progress.action.action
+                                if state.turn_progress is not None else None
+                            ),
                         },
                     ),
                 )
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 # Worker boundary: isolate provider/internal failures from HTTP threads.
-                state = original
+                state = memory.load(run_id)
                 state.status = "failed"
                 state.error_code = (
                     str(exc) if isinstance(exc, LLMFailure) else "execution_failed"
@@ -368,6 +377,8 @@ class RunWorker:
             self._persist(state, events, llm.usage, original_steps)
             return True
         finally:
+            if run_id is not None:
+                LIVE_ACTIVITY.clear(run_id)
             TURN_LOCK.release()
 
     def _loop(self):

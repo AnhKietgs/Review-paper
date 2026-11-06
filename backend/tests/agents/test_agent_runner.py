@@ -136,7 +136,10 @@ def test_comparison_batch_cursor_survives_checkpoint_reload():
     state, _ = execute(state)
     assert state.status == "completed"
     comparisons = [f for f in state.findings if f["kind"] == "comparison"]
-    assert len(comparisons) == 2
+    assert len(comparisons) == 1
+    assert {e["chunk_id"] for e in comparisons[0]["evidence"]} == {
+        "main-1", "main-2", "ref-1",
+    }
 
 
 def test_reference_deleted_between_comparison_batches_is_skipped():
@@ -203,7 +206,8 @@ def test_model_cannot_choose_persisted_finding_ids():
             return result
 
     state, _ = execute(run_state(chunks=["main-1", "main-2"]), ReusedIds())
-    assert len({f["id"] for f in state.findings}) == 2
+    assert len(state.findings) == 1
+    assert len(state.findings[0]["evidence"]) == 2
     assert all(f["id"] != "existing-foreign-finding" for f in state.findings)
 
 
@@ -527,6 +531,134 @@ def test_supervisor_rate_limit_suspends_turn_instead_of_falling_back():
         and item["agent"] == "scientific_review"
         for item in events.items
     )
+
+
+@pytest.mark.parametrize("action", [
+    "analyze", "compare", "verify", "repair", "audit_omission",
+])
+def test_worker_pause_reuses_decision_and_context_in_same_turn(action):
+    class PausingWorker(FixtureClient):
+        supervisor_calls = 0
+        worker_calls = 0
+
+        def generate_json(self, messages, schema):
+            if schema is AgentAction:
+                self.supervisor_calls += 1
+            else:
+                self.worker_calls += 1
+                if self.worker_calls <= 2:
+                    raise RateLimitPause(60)
+            return super().generate_json(messages, schema)
+
+    state = run_state({"ref": 1} if action == "compare" else {}, max_turns=1)
+    state.remaining_chunk_ids = []
+    state.processed_chunk_ids = ["main-1"]
+    memory, events = RunMemory(), RunEventRecorder()
+    client = PausingWorker()
+    runner = AgentRunner(client, Catalog(), memory, events)
+    finding = {
+        "id": "finding", "criterion_code": "method", "kind": "analysis",
+        "claim": "The sample contains 24 participants.",
+        "compared_paper_ids": [], "evidence": [{
+            "paper_id": "main", "content_version": 1, "chunk_id": "main-1",
+            "quote": "The sample contains 24 participants.",
+            "locator_type": "pdf_page", "locator_value": "1",
+        }],
+    }
+    if action == "analyze":
+        state.current_batch_ids = ["main-1"]
+        state.processed_chunk_ids = []
+    elif action == "verify":
+        state.pending_findings = [finding]
+    elif action == "repair":
+        finding["evidence"] = []
+        runner._stage(state, [finding], "scientific_review", ["main-1"])
+    elif action == "audit_omission":
+        finding.update(kind="omission", evidence=[])
+        state.omission_audits = [{
+            "finding": finding, "checked": 0, "ambiguous": False,
+        }]
+    memory.save(state)
+    for _ in range(2):
+        with pytest.raises(RateLimitPause):
+            runner.run_turn(state)
+        state = memory.load(state.run_id)
+        assert state.turn_count == 1
+        assert state.turn_progress.action.action == action
+        assert state.repair_count == 0
+        if action == "repair":
+            assert len(state.repair_queue) == 1
+        if action == "audit_omission":
+            assert state.omission_audits[0]["checked"] == 0
+        runner = AgentRunner(client, Catalog(), memory, events)
+    state = runner.run_turn(state)
+    assert state.turn_count == 1
+    assert state.turn_progress is None
+    assert client.supervisor_calls == 1
+    assert client.worker_calls == 3
+    assert state.repair_count == (1 if action == "repair" else 0)
+    assert sum(e["action"] == "context_built" for e in events.items) == 1
+    assert sum(e["action"] == "decision_reused" for e in events.items) == 2
+
+
+def test_received_worker_output_is_reused_without_duplicate_analysis(monkeypatch):
+    state = run_state()
+    state.current_batch_ids = ["main-1"]
+    memory, events = RunMemory(), RunEventRecorder()
+    client = FixtureClient()
+    runner = AgentRunner(client, Catalog(), memory, events)
+    memory.save(state)
+    original_stage = runner._stage
+
+    def interrupted_stage(*_args):
+        raise RateLimitPause(60)
+
+    monkeypatch.setattr(runner, "_stage", interrupted_stage)
+    with pytest.raises(RateLimitPause):
+        runner.run_turn(state)
+    state = memory.load(state.run_id)
+    assert state.turn_progress.output is not None
+    assert state.analysis == {}
+    calls = client.usage["calls"]
+    monkeypatch.setattr(runner, "_stage", original_stage)
+    state = runner.run_turn(state)
+    assert client.usage["calls"] == calls
+    assert all(len(values) == 1 for values in state.analysis.values())
+    assert len(state.pending_findings) == 1
+    assert state.turn_progress is None
+    assert any(e["action"] == "worker_output_reused" for e in events.items)
+
+
+def test_cached_context_cannot_bypass_deleted_source_permissions():
+    class DeletedCatalog(Catalog):
+        def is_active(self, _paper_id):
+            return False
+
+    class Pause(FixtureClient):
+        def generate_json(self, messages, schema):
+            if schema is ScientificOutput:
+                raise RateLimitPause(60)
+            return super().generate_json(messages, schema)
+
+    state = run_state()
+    state.current_batch_ids = ["main-1"]
+    memory, events = RunMemory(), RunEventRecorder()
+    runner = AgentRunner(Pause(), Catalog(), memory, events)
+    memory.save(state)
+    with pytest.raises(RateLimitPause):
+        runner.run_turn(state)
+    restored = memory.load(state.run_id)
+    assert restored.turn_progress.context is not None
+    runner = AgentRunner(FixtureClient(), DeletedCatalog(), memory, events)
+    with pytest.raises(ValueError, match="permission denied"):
+        runner.run_turn(restored)
+    assert not any(e["action"] == "context_reused" for e in events.items)
+
+
+def test_legacy_checkpoint_has_no_unfinished_turn():
+    saved = run_state().model_dump()
+    saved.pop("turn_progress", None)
+    assert RunState.model_validate(saved).turn_progress is None
 
 
 def test_omission_topics_share_each_document_scan():

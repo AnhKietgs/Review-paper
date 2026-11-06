@@ -10,6 +10,7 @@ from app.api.v1.schemas.runs import RunAccepted
 from app.core.config import Settings
 from app.core.errors import ConflictError, NotFoundError
 from app.harness.events import RunEventInput, RunEventRecorder
+from app.harness.activity import get_activity
 from app.harness.memory import RunMemory
 from app.harness.state import RunScope, RunState
 from app.infrastructure.persistence.orm_models import RunRow
@@ -146,6 +147,7 @@ class RunService:
             "reference_assessments": state.reference_assessments,
             "max_batches": state.max_batches,
             "max_turns": state.max_turns,
+            "activity": get_activity(state, row.status),
         }
 
     def events(self, run_id: str, after: int) -> dict:

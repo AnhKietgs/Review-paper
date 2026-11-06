@@ -25,6 +25,16 @@ export interface Review {
   references: { paper_id: string; paper_content_version: number }[]; findings: Finding[];
 }
 export interface AcceptedRun { run_id: string; review_id: string; status: string }
+export interface RunActivity {
+  phase: string; resume_action: string | null; agent: string | null;
+  source: "live" | "checkpoint"; updated_at: string | null; retry_at: string | null;
+  work: {
+    paper_read: { done: number; total: number };
+    references: { done: number; total: number };
+    findings: { total: number; pending_verification: number; pending_repairs: number; repair_attempts: number };
+    omission_audit: { topics_pending: number; group_topics: number; checked_chunks: number; total_chunks: number };
+  };
+}
 export interface Run {
   id: string; review_id: string; status: string; step_count: number;
   batch_count: number; processed: number; remaining: number; max_batches: number;
@@ -32,6 +42,7 @@ export interface Run {
   call_counts: Record<string, number>;
   usage: { calls?: number; tokens?: number };
   reference_assessments: Record<string, { status: string; reason: string }>;
+  activity?: RunActivity;
 }
 export interface RunEvent {
   id: string; sequence: number; agent: string; action: string; tool: string | null;

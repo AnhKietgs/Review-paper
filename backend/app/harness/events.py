@@ -25,8 +25,9 @@ class RunEventInput(BaseModel):
 class RunEventRecorder:
     """Append events within the same transaction as their checkpoint."""
 
-    def __init__(self, session: Session | None = None):
+    def __init__(self, session: Session | None = None, on_event=None):
         self.session = session
+        self.on_event = on_event
         self.items: list[dict] = []
 
     def append(self, run_id: str, event: RunEventInput) -> None:
@@ -54,3 +55,5 @@ class RunEventRecorder:
         else:
             self.session.add(RunEventRow(**data))
             self.session.flush()
+        if self.on_event is not None:
+            self.on_event(run_id, event)

@@ -249,6 +249,23 @@ iframe { width: 100%; height: 480px; border: 1px solid var(--line); border-radiu
 .cooldown-notice { display: grid; grid-template-columns: minmax(220px, auto) 1fr; align-items: center; gap: 9px 22px; }
 .cooldown-notice strong { color: var(--accent-hover); font-variant-numeric: tabular-nums; }
 .run-heartbeat { display: inline-flex; align-items: center; gap: 7px; color: var(--success); font-size: .8rem; }
+.work-progress { border-color: var(--sky-border); }
+.work-progress-heading { align-items: flex-start; }
+.work-progress-heading h2 { margin: 4px 0 8px; }
+.work-progress-heading p.muted { margin-bottom: 12px; max-width: 72ch; }
+.work-coverage { padding: 18px 0; border-block: 1px solid var(--line); }
+.work-coverage progress { display: block; width: 100%; height: 10px; margin: 13px 0; accent-color: var(--accent); border: none; border-radius: 8px; overflow: hidden; }
+.work-coverage progress::-webkit-progress-bar { background: var(--sky-light); }
+.work-coverage progress::-webkit-progress-value { background: var(--accent); border-radius: 8px; }
+.work-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 14px; margin-block: 20px; }
+.work-counts > div { display: flex; flex-direction: column; gap: 6px; padding: 15px; background: var(--soft); border-radius: 12px; }
+.work-counts strong { color: var(--ink); font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.work-counts span { color: var(--muted); font-size: .8rem; }
+.work-audit { display: grid; gap: 7px; padding: 16px; margin-bottom: 18px; background: var(--sky-light); color: var(--accent-hover); border-radius: 12px; }
+.work-resume { padding: 14px; background: var(--warning-bg); color: var(--warning); border-radius: 12px; }
+.work-stale { color: var(--danger); }
+.agent.agent-current { border: 2px solid var(--accent); }
+.agent.agent-current::after { content: "Đang thực thi"; display: block; margin-top: 10px; color: var(--accent); font-size: .8rem; font-weight: 600; }
 @keyframes run-dot-pulse { 50% { opacity: .35; transform: scale(.75); } }
 @keyframes run-ellipsis-pulse { 50% { opacity: .25; } }
 

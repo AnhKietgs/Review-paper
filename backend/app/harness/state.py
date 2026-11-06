@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.agents.schemas import AgentAction
+
 
 class RunScope(BaseModel):
     """Frozen documents and rubric an execution may access."""
@@ -19,6 +21,16 @@ class RunScope(BaseModel):
         if paper_id == self.main_paper_id:
             return version == self.main_version
         return self.reference_versions.get(paper_id) == version
+
+
+class TurnProgress(BaseModel):
+    """Reusable completed steps of one unfinished logical turn."""
+
+    action: AgentAction
+    context_role: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    context: dict | None = None
+    output: dict | None = None
 
 
 class RunState(BaseModel):
@@ -47,6 +59,7 @@ class RunState(BaseModel):
     status: str = "running"
     call_counts: dict[str, int] = Field(default_factory=dict)
     initialized: bool = False
+    turn_progress: TurnProgress | None = None
     error_code: str | None = None
     cooldown_until: datetime | None = None
     llm_mode: str = "fixture"

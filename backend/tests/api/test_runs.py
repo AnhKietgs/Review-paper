@@ -1,6 +1,7 @@
 """Background queue, restart recovery and checkpoint resume."""
 
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,6 +11,8 @@ from app.harness.memory import RunMemory
 from app.infrastructure.persistence.unit_of_work import UnitOfWork
 from app.harness.runner import AgentRunner
 from app.workers.run_worker import RunWorker
+from app.agents.schemas import AgentAction, ScientificOutput
+from app.infrastructure.groq.fixture_client import FixtureClient
 
 
 def test_oversized_context_failure_can_resume_its_existing_checkpoint(
@@ -129,3 +132,85 @@ def test_rate_limit_cools_down_and_continues_same_checkpoint(
     assert resumed["cooldown_until"] is None
     events = api_client.get(f"/api/v1/runs/{run_id}/events").json()["items"]
     assert any(item["action"] == "provider_cooldown" for item in events)
+
+
+def test_worker_cooldown_persists_decision_and_only_retries_worker(
+    api_client, review_seed, monkeypatch,
+):
+    review = review_seed(False)
+    run_id = api_client.post(
+        f"/api/v1/reviews/{review['id']}/runs"
+    ).json()["run_id"]
+    worker = RunWorker()
+    worker.tick()  # Reserve the main document batch first.
+    original_generate = FixtureClient.generate_json
+    calls = {"supervisor": 0, "worker": 0}
+
+    def limited_once(self, messages, schema):
+        if schema is AgentAction:
+            calls["supervisor"] += 1
+        if schema is ScientificOutput:
+            calls["worker"] += 1
+            if calls["worker"] == 1:
+                raise RateLimitPause(60)
+        return original_generate(self, messages, schema)
+
+    monkeypatch.setattr(FixtureClient, "generate_json", limited_once)
+    assert worker.tick()
+    with UnitOfWork() as unit:
+        state = RunMemory(unit.session).load(run_id)
+        assert state.turn_progress.action.action == "analyze"
+        assert state.turn_progress.context is not None
+        assert state.turn_count == 2
+        assert state.processed_chunk_ids == []
+        state.cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        RunMemory(unit.session).save(state)
+    assert RunWorker().tick()  # Fresh worker restores the serialized progress.
+    assert calls == {"supervisor": 1, "worker": 2}
+    with UnitOfWork() as unit:
+        state = RunMemory(unit.session).load(run_id)
+        assert state.turn_progress is None
+        assert state.turn_count == 2
+        assert len(state.processed_chunk_ids) == 1
+    events = api_client.get(f"/api/v1/runs/{run_id}/events").json()["items"]
+    assert any(e["action"] == "decision_reused" for e in events)
+    assert any(e["action"] == "context_reused" for e in events)
+
+
+def test_current_work_is_visible_during_an_unfinished_model_call(
+    api_client, review_seed, monkeypatch,
+):
+    review = review_seed(False)
+    run_id = api_client.post(
+        f"/api/v1/reviews/{review['id']}/runs"
+    ).json()["run_id"]
+    worker = RunWorker()
+    worker.tick()
+    started, release = Event(), Event()
+    generate = FixtureClient.generate_json
+
+    def slow_model(self, messages, schema):
+        if schema is ScientificOutput:
+            started.set()
+            assert release.wait(10)
+        return generate(self, messages, schema)
+
+    monkeypatch.setattr(FixtureClient, "generate_json", slow_model)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        task = pool.submit(worker.tick)
+        try:
+            assert started.wait(10)
+            response = api_client.get(f"/api/v1/runs/{run_id}")
+            activity = response.json()["activity"]
+            assert activity["source"] == "live"
+            assert activity["phase"] == "analyze"
+            assert activity["agent"] == "scientific_review"
+            assert activity["work"]["paper_read"] == {"done": 0, "total": 1}
+            assert "context" not in activity
+            assert "chunks" not in activity
+        finally:
+            release.set()
+        assert task.result(timeout=10)
+    activity = api_client.get(f"/api/v1/runs/{run_id}").json()["activity"]
+    assert activity["source"] == "checkpoint"
+    assert activity["phase"] == "preparing"

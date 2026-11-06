@@ -1,6 +1,7 @@
 """Bounded loop owned by the harness, with one worker per turn."""
 
 import re
+from copy import deepcopy
 from uuid import uuid4
 
 from app.agents.graph_factory import AgentFactory
@@ -11,10 +12,14 @@ from app.harness.context import ContextBuilder
 from app.harness.document_queue import DocumentQueue
 from app.harness.events import RunEventInput, RunEventRecorder
 from app.harness.evidence import EvidenceResolutionError, EvidenceResolver
+from app.harness.finding_merge import finding_key, merge_evidence
 from app.harness.memory import RunMemory
 from app.harness.output_gate import OutputGate
-from app.harness.state import RunState
+from app.harness.state import RunState, TurnProgress
 from app.harness.tool_gateway import ToolCall, ToolGateway
+from app.harness.turn_checkpoint import (
+    reusable_context, save_progress, turn_budget_exhausted,
+)
 
 
 class AgentRunner:
@@ -63,12 +68,27 @@ class AgentRunner:
         return "fixture" if self.llm.__class__.__name__ == "FixtureClient" else "custom"
 
     def _invoke(self, state: RunState, role: str, context: dict) -> dict:
+        progress = state.turn_progress
+        if progress is not None:
+            if (
+                progress.output is not None and progress.context_role == role
+                and progress.context == context
+            ):
+                self._event(state, role, "worker_output_reused")
+                return deepcopy(progress.output)
+            progress.context = deepcopy(context)
+            progress.context_role = role
+            progress.output = None
         self._event(state, role, "agent_started", model=self._model_id(role))
         state.call_counts[role] = state.call_counts.get(role, 0) + 1
+        save_progress(self.memory, state)
         output = self._graph(role).invoke({"context": context})["output"]
         self._event(state, role, "agent_finished", "Structured output received")
         if self._selects_evidence(role):
             self._resolve_evidence(state, role, output, context["chunks"])
+        if progress is not None:
+            progress.output = deepcopy(output)
+            save_progress(self.memory, state)
         return output
 
     def _resolve_evidence(self, state, role, output, sources) -> None:
@@ -135,13 +155,7 @@ class AgentRunner:
                     finding["claim"] = omission.group(1).rstrip(". ")
             if finding["kind"] == "omission":
                 finding["evidence"] = []
-                if not any(
-                    item["finding"]["claim"].casefold()
-                    == finding["claim"].casefold()
-                    and item["finding"]["criterion_code"]
-                    == finding["criterion_code"]
-                    for item in state.omission_audits
-                ):
+                if not self._merge_duplicate(state, finding):
                     state.omission_audits.append(
                         {"finding": finding, "checked": 0, "ambiguous": False}
                     )
@@ -150,6 +164,8 @@ class AgentRunner:
                         "Waiting for full main-paper coverage",
                         finding_id=finding["id"], topic=finding["claim"],
                     )
+                continue
+            if self._merge_duplicate(state, finding):
                 continue
             result = self.output_gate.validate(finding, state.scope)
             self._event(
@@ -163,15 +179,110 @@ class AgentRunner:
             if result.passed:
                 state.pending_findings.append(finding)
             else:
+                sources, _ = merge_evidence(
+                    {**finding, "evidence": []}, finding,
+                    self.output_gate, state.scope,
+                )
                 state.findings.append(
                     {
                         **finding,
-                        "evidence": [],
+                        "evidence": sources,
                         "status": "unsupported",
                         "verdict": ", ".join(result.reason_codes),
                     }
                 )
                 self._queue_repair(state, finding, role, source_ids)
+
+    def _merge_duplicate(self, state: RunState, finding: dict) -> bool:
+        """Retain a canonical claim and reopen it only for new valid evidence."""
+        candidates = (
+            state.pending_findings + state.findings
+            + [item["finding"] for item in state.omission_audits]
+        )
+        existing = next((
+            item for item in candidates if finding_key(item) == finding_key(finding)
+        ), None)
+        if existing is None:
+            return False
+        sources, added = merge_evidence(
+            existing, finding, self.output_gate, state.scope,
+        )
+        reopened = False
+        if added or sources != existing["evidence"]:
+            candidate = {
+                key: value for key, value in existing.items()
+                if key not in {"status", "verdict"}
+            }
+            candidate["evidence"] = sources
+            if self.output_gate.validate(candidate, state.scope).passed:
+                state.findings = [
+                    item for item in state.findings if item["id"] != existing["id"]
+                ]
+                if existing in state.pending_findings:
+                    index = state.pending_findings.index(existing)
+                    state.pending_findings[index] = candidate
+                else:
+                    state.pending_findings.append(candidate)
+                reopened = True
+            else:
+                # A comparison can collect each side in separate drafts. Keep
+                # valid partial sources, but never send it past the full gate.
+                existing["evidence"] = sources
+        self._merge_repair_jobs(state, existing["id"], finding["id"], reopened)
+        for job in state.repair_queue:
+            if job["finding_id"] == existing["id"]:
+                job["source_ids"] = list(dict.fromkeys(
+                    job["source_ids"] + [item["chunk_id"] for item in sources]
+                ))
+        self._event(
+            state, "harness", "findings_merged",
+            "Duplicate claim consolidated before verification",
+            canonical_finding_id=existing["id"], merged_finding_id=finding["id"],
+            added_evidence=added, verification_reopened=reopened,
+            verification_pending=any(
+                item["id"] == existing["id"] for item in state.pending_findings
+            ),
+        )
+        return True
+
+    @staticmethod
+    def _merge_repair_jobs(state, canonical_id, duplicate_id, reopened):
+        """Keep at most one bounded repair job and carry attempted identity."""
+        ids = {canonical_id, duplicate_id}
+        jobs = [job for job in state.repair_queue if job["finding_id"] in ids]
+        queued_ids = {job["finding_id"] for job in jobs}
+        already_repaired = any(
+            item in state.repair_attempted_ids for item in ids - queued_ids
+        )
+        state.repair_queue = [
+            job for job in state.repair_queue if job["finding_id"] not in ids
+        ]
+        if jobs and not reopened:
+            state.repair_queue.append({
+                **jobs[0], "finding_id": canonical_id,
+                "source_ids": list(dict.fromkeys(
+                    source for job in jobs for source in job["source_ids"]
+                )),
+            })
+        if reopened and jobs and not already_repaired:
+            # Queueing reserves the attempt before execution. Evidence can
+            # recover first, so cancelling that job must release its reservation.
+            state.repair_attempted_ids = [
+                item for item in state.repair_attempted_ids if item not in ids
+            ]
+        elif any(item in state.repair_attempted_ids for item in ids):
+            state.repair_attempted_ids = list(dict.fromkeys(
+                canonical_id if item in ids else item
+                for item in state.repair_attempted_ids
+            ))
+
+    def _consolidate_pending(self, state: RunState) -> None:
+        """Normalize restored or repaired queues without allocating new IDs."""
+        pending = state.pending_findings
+        state.pending_findings = []
+        for finding in pending:
+            if not self._merge_duplicate(state, finding):
+                state.pending_findings.append(finding)
 
     def _context(
         self,
@@ -181,6 +292,14 @@ class AgentRunner:
         ids: list[str],
         extra: list[dict] | None = None,
     ) -> dict:
+        source_ids = ids + [item["id"] for item in (extra or [])]
+        cached = reusable_context(state, role, source_ids, self.catalog)
+        if cached is not None:
+            self._event(state, "context", "context_reused", f"Context for {role}")
+            return cached
+        if state.turn_progress is not None:
+            state.turn_progress.context = None
+            state.turn_progress.output = None
         result = gateway.execute(
             ToolCall(agent=role, name="read_chunks", arguments={"chunk_ids": ids}),
             state.scope,
@@ -201,6 +320,11 @@ class AgentRunner:
             f"Context for {role}",
             source_ids=[item["id"] for item in context["chunks"]],
         )
+        if state.turn_progress is not None:
+            state.turn_progress.context_role = role
+            state.turn_progress.source_ids = source_ids
+            state.turn_progress.context = deepcopy(context)
+            save_progress(self.memory, state)
         return context
 
     def _analyze(self, state: RunState, gateway: ToolGateway) -> None:
@@ -315,6 +439,7 @@ class AgentRunner:
             del state.comparison_progress[paper_id]
 
     def _verify(self, state: RunState, gateway: ToolGateway) -> None:
+        self._consolidate_pending(state)
         valid = []
         for finding in state.pending_findings:
             result = self.output_gate.validate(finding, state.scope)
@@ -438,7 +563,7 @@ class AgentRunner:
             self._event(state, role, "repair_unresolved", "No supported revision")
             return
         candidate = candidates[0]
-        candidate["id"] = str(uuid4())
+        candidate["id"] = original["id"]
         result = self.output_gate.validate(candidate, state.scope)
         self._event(
             state, "output_gate",
@@ -452,8 +577,10 @@ class AgentRunner:
         state.findings = [
             item for item in state.findings if item["id"] != original["id"]
         ]
-        state.repair_attempted_ids.append(candidate["id"])
-        state.pending_findings.append(candidate)
+        if candidate["id"] not in state.repair_attempted_ids:
+            state.repair_attempted_ids.append(candidate["id"])
+        if not self._merge_duplicate(state, candidate):
+            state.pending_findings.append(candidate)
         self._event(
             state, role, "finding_repaired", "Revision sent to Evidence Verifier",
             original_finding_id=original["id"], finding_id=candidate["id"],
@@ -610,27 +737,10 @@ class AgentRunner:
         )
         return action
 
-    def run_turn(self, state: RunState) -> RunState:
-        """Execute one supervisor turn and at most one eligible worker."""
-        if state.status != "running":
-            return state
-        if state.turn_count >= state.max_turns or (
-            state.batch_count >= state.max_batches
-            and state.remaining_chunk_ids
-            and not state.current_batch_ids
-            and not state.pending_findings
-        ):
-            state.status = "incomplete"
-            self._event(
-                state,
-                "harness",
-                "budget_exhausted",
-                "Unfinished work remains",
-                remaining_chunk_ids=state.remaining_chunk_ids,
-            )
-            self.memory.save(state)
-            return state
-        state.turn_count += 1
+    def _turn_action(self, state: RunState) -> AgentAction:
+        """Persist a fresh decision or resume the already admitted turn."""
+        if state.turn_progress is None:
+            state.turn_count += 1
         if not state.initialized:
             state.initialized = True
             if not state.scope.reference_versions:
@@ -641,7 +751,31 @@ class AgentRunner:
                 self._event(
                     state, "evidence_verifier", "agent_skipped", "No pending findings"
                 )
-        action = self._supervisor_action(state)
+        if state.turn_progress is None:
+            action = self._supervisor_action(state)
+            state.turn_progress = TurnProgress(action=action)
+            self.memory.save(state)
+        else:
+            action = state.turn_progress.action
+            self._event(
+                state, "supervisor", "decision_reused", action.reason,
+                selected_action=action.action,
+            )
+        return action
+
+    def run_turn(self, state: RunState) -> RunState:
+        """Execute one supervisor turn and at most one eligible worker."""
+        if state.status != "running":
+            return state
+        if turn_budget_exhausted(state):
+            state.status = "incomplete"
+            self._event(
+                state, "harness", "budget_exhausted", "Unfinished work remains",
+                remaining_chunk_ids=state.remaining_chunk_ids,
+            )
+            self.memory.save(state)
+            return state
+        action = self._turn_action(state)
         legal = action.action in eligible_actions(state)
         if action.action == "compare":
             legal = legal and action.reference_paper_id in (
@@ -694,6 +828,7 @@ class AgentRunner:
                 self._repair(state, gateway)
             elif action.action == "audit_omission":
                 self._audit_omission(state, gateway)
+        state.turn_progress = None
         self._event(
             state,
             "memory",
