@@ -12,6 +12,43 @@ from app.infrastructure.groq.client import GroqClient
 from app.infrastructure.groq.quota import GroqQuota
 
 
+def test_cancel_during_quota_wait_prevents_another_provider_call():
+    from app.agents.ports import RunCancelled
+
+    calls, waits = [], []
+
+    def completion(**_kwargs):
+        calls.append(1)
+        raise RateLimitError(
+            "limited", response=httpx.Response(
+                429, headers={"retry-after": "60"},
+                request=httpx.Request("POST", "https://example.invalid"),
+            ), body=None,
+        )
+
+    adapter = GroqClient(
+        "fake", "model", completion=completion, sleep=waits.append,
+        is_cancelled=lambda: len(waits) >= 2,
+    )
+    with pytest.raises(RunCancelled):
+        adapter.generate_json([], AgentAction)
+    assert calls == [1]
+    assert waits == [1, 1]
+
+
+def test_cancelled_run_never_sends_a_provider_request():
+    from app.agents.ports import RunCancelled
+
+    calls = []
+    adapter = GroqClient(
+        "fake", "model", completion=lambda **_kwargs: calls.append(1),
+        is_cancelled=lambda: True,
+    )
+    with pytest.raises(RunCancelled):
+        adapter.generate_json([], AgentAction)
+    assert calls == []
+
+
 def test_rate_limit_wait_is_bounded_to_five_minutes_and_safe():
     calls = []
     waits = []

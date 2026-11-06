@@ -22,6 +22,10 @@ class LLMFailure(RuntimeError):
     """Sanitized provider failure safe to expose to a run trace."""
 
 
+class RunCancelled(LLMFailure):
+    """The user stopped execution; no further provider attempt is allowed."""
+
+
 class RateLimitPause(LLMFailure):
     """Retryable provider limit with a sanitized delay in seconds."""
 

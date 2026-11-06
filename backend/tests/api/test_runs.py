@@ -1,7 +1,8 @@
 """Background queue, restart recovery and checkpoint resume."""
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Event, get_ident
+from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from app.agents.ports import LLMFailure, RateLimitPause
 from app.harness.memory import RunMemory
 from app.infrastructure.persistence.unit_of_work import UnitOfWork
+from app.infrastructure.persistence.orm_models import RunRow
 from app.harness.runner import AgentRunner
 from app.workers.run_worker import RunWorker
 from app.agents.schemas import AgentAction, ScientificOutput
@@ -214,3 +216,130 @@ def test_current_work_is_visible_during_an_unfinished_model_call(
     activity = api_client.get(f"/api/v1/runs/{run_id}").json()["activity"]
     assert activity["source"] == "checkpoint"
     assert activity["phase"] == "preparing"
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "interrupted", "failed"])
+def test_cancel_keeps_review_and_checkpoint_and_is_idempotent(
+    api_client, review_seed, status,
+):
+    review = review_seed(False)
+    accepted = api_client.post(f"/api/v1/reviews/{review['id']}/runs").json()
+    run_id = accepted["run_id"]
+    with UnitOfWork() as unit:
+        row = unit.session.get(RunRow, run_id)
+        row.status = status
+        state = RunMemory(unit.session).load(run_id)
+        state.status = status
+        state.cooldown_until = datetime.now(timezone.utc) + timedelta(hours=1)
+        before_remaining = list(state.remaining_chunk_ids)
+        RunMemory(unit.session).save(state)
+    for _ in range(2):
+        result = api_client.post(f"/api/v1/runs/{run_id}/cancel")
+        assert result.status_code == 200, result.text
+        assert result.json()["status"] == "cancelled"
+    result = api_client.get(f"/api/v1/runs/{run_id}").json()
+    assert result["status"] == "cancelled"
+    assert result["cooldown_until"] is None
+    assert result["activity"]["phase"] == "cancelled"
+    assert api_client.get(f"/api/v1/reviews/{accepted['review_id']}").status_code == 200
+    assert api_client.post(f"/api/v1/runs/{run_id}/resume").status_code == 409
+    assert not RunWorker().tick()
+    with UnitOfWork() as unit:
+        state = RunMemory(unit.session).load(run_id)
+        assert state.status == "cancelled"
+        assert state.remaining_chunk_ids == before_remaining
+    events = api_client.get(f"/api/v1/runs/{run_id}/events").json()["items"]
+    assert sum(e["action"] == "run_cancelled" for e in events) == 1
+
+
+def test_cancel_rejects_missing_or_completed_run(api_client, review_seed):
+    assert api_client.post("/api/v1/runs/missing/cancel").status_code == 404
+    review = review_seed(False)
+    accepted = api_client.post(f"/api/v1/reviews/{review['id']}/runs").json()
+    worker = RunWorker()
+    for _ in range(10):
+        worker.tick()
+    assert api_client.post(
+        f"/api/v1/runs/{accepted['run_id']}/cancel"
+    ).status_code == 409
+
+
+def test_late_worker_result_cannot_overwrite_user_cancellation(
+    api_client, review_seed, monkeypatch,
+):
+    review = review_seed(False)
+    accepted = api_client.post(f"/api/v1/reviews/{review['id']}/runs").json()
+    run_id = accepted["run_id"]
+    worker = RunWorker()
+    worker.tick()
+    started, release = Event(), Event()
+    generate = FixtureClient.generate_json
+
+    def slow_model(self, messages, schema):
+        if schema is ScientificOutput:
+            started.set()
+            assert release.wait(10)
+        return generate(self, messages, schema)
+
+    monkeypatch.setattr(FixtureClient, "generate_json", slow_model)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        task = pool.submit(worker.tick)
+        try:
+            assert started.wait(10)
+            assert api_client.post(f"/api/v1/runs/{run_id}/cancel").status_code == 200
+        finally:
+            release.set()
+        assert task.result(timeout=10)
+    result = api_client.get(f"/api/v1/runs/{run_id}").json()
+    assert result["status"] == "cancelled"
+    assert result["processed"] == 0
+    assert api_client.get(
+        f"/api/v1/reviews/{accepted['review_id']}"
+    ).json()["findings"] == []
+
+
+def test_persist_and_cancel_serialize_before_reading_run_status(
+    api_client, review_seed, monkeypatch,
+):
+    from app.harness.events import RunEventRecorder
+
+    review = review_seed(False)
+    accepted = api_client.post(f"/api/v1/reviews/{review['id']}/runs").json()
+    run_id = accepted["run_id"]
+    RunWorker().tick()
+    with UnitOfWork() as unit:
+        state = RunMemory(unit.session).load(run_id)
+    original_steps = state.turn_count
+    state.turn_count += 1
+    read, release, cancelled = Event(), Event(), Event()
+    persisting_thread = []
+    original_get = Session.get
+
+    def held_get(self, entity, ident, *args, **kwargs):
+        result = original_get(self, entity, ident, *args, **kwargs)
+        if entity is RunRow and ident == run_id and get_ident() in persisting_thread:
+            read.set()
+            assert release.wait(10)
+        return result
+
+    def persist():
+        persisting_thread.append(get_ident())
+        RunWorker._persist(state, RunEventRecorder(), {}, original_steps)
+
+    def cancel():
+        result = api_client.post(f"/api/v1/runs/{run_id}/cancel")
+        cancelled.set()
+        return result
+
+    monkeypatch.setattr(Session, "get", held_get)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        saving = pool.submit(persist)
+        assert read.wait(10)
+        cancelling = pool.submit(cancel)
+        try:
+            assert not cancelled.wait(1)
+        finally:
+            release.set()
+        saving.result(timeout=10)
+        assert cancelling.result(timeout=10).status_code == 200
+    assert api_client.get(f"/api/v1/runs/{run_id}").json()["status"] == "cancelled"

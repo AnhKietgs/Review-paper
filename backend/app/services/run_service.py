@@ -1,6 +1,7 @@
 """Start, inspect and resume durable review executions."""
 
 from uuid import uuid4
+from datetime import datetime, timezone
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -158,6 +159,7 @@ class RunService:
 
     def resume(self, run_id: str) -> RunAccepted:
         """Explicitly requeue an interrupted run without erasing its checkpoint."""
+        self.session.execute(text("BEGIN IMMEDIATE"))
         row = self.repository.get(run_id)
         if row is None:
             raise NotFoundError("run_missing", "Run not found")
@@ -183,4 +185,32 @@ class RunService:
                 output_summary="Checkpoint requeued",
             ),
         )
+        return RunAccepted(run_id=row.id, review_id=row.review_id, status=row.status)
+
+    def cancel(self, run_id: str) -> RunAccepted:
+        """Stop future processing without deleting a review or its saved results."""
+        self.session.execute(text("BEGIN IMMEDIATE"))
+        row = self.repository.get(run_id)
+        if row is None:
+            raise NotFoundError("run_missing", "Run not found")
+        if row.status == "cancelled":
+            return RunAccepted(
+                run_id=row.id, review_id=row.review_id, status=row.status,
+            )
+        if row.status not in {"queued", "running", "interrupted", "failed"}:
+            raise ConflictError("not_cancellable", "This run has already finished")
+        previous_error = row.error_code
+        row.status = "cancelled"
+        row.error_code = "cancelled_by_user"
+        row.finished_at = datetime.now(timezone.utc)
+        state = RunMemory(self.session).load(run_id)
+        state.status = "cancelled"
+        state.error_code = "cancelled_by_user"
+        state.cooldown_until = None
+        RunMemory(self.session).save(state)
+        RunEventRecorder(self.session).append(run_id, RunEventInput(
+            agent="harness", action="run_cancelled",
+            output_summary="Stopped by user; saved review results retained",
+            payload={"previous_error_code": previous_error},
+        ))
         return RunAccepted(run_id=row.id, review_id=row.review_id, status=row.status)

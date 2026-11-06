@@ -35,3 +35,9 @@ def get_events(
 def resume_run(run_id: str, unit: UnitOfWork = Depends(get_uow)):
     """Resume an interrupted or formerly rate limited checkpoint."""
     return RunService(unit.session).resume(run_id)
+
+
+@router.post("/runs/{run_id}/cancel", response_model=RunAccepted)
+def cancel_run(run_id: str, unit: UnitOfWork = Depends(get_uow)):
+    """Cancel execution while retaining the review and its saved checkpoint."""
+    return RunService(unit.session).cancel(run_id)

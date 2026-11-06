@@ -264,6 +264,8 @@ iframe { width: 100%; height: 480px; border: 1px solid var(--line); border-radiu
 .work-audit { display: grid; gap: 7px; padding: 16px; margin-bottom: 18px; background: var(--sky-light); color: var(--accent-hover); border-radius: 12px; }
 .work-resume { padding: 14px; background: var(--warning-bg); color: var(--warning); border-radius: 12px; }
 .work-stale { color: var(--danger); }
+button.danger-button { color: var(--danger); background: var(--danger-bg); border: 1px solid currentColor; }
+button.danger-button:hover:not(:disabled) { color: white; background: var(--danger); }
 .agent.agent-current { border: 2px solid var(--accent); }
 .agent.agent-current::after { content: "Đang thực thi"; display: block; margin-top: 10px; color: var(--accent); font-size: .8rem; font-weight: 600; }
 @keyframes run-dot-pulse { 50% { opacity: .35; transform: scale(.75); } }

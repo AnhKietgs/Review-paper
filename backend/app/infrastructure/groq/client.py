@@ -7,7 +7,7 @@ import time
 from groq import APIError, Groq, RateLimitError
 from pydantic import ValidationError
 
-from app.agents.ports import LLMFailure, RateLimitPause
+from app.agents.ports import LLMFailure, RateLimitPause, RunCancelled
 from app.infrastructure.groq.quota import GroqQuota, estimate_input_tokens
 
 MAX_RATE_LIMIT_WAIT_SECONDS = 300
@@ -30,6 +30,7 @@ class GroqClient:
         *,
         quota: GroqQuota | None = None,
         on_quota=None,
+        is_cancelled=None,
     ):
         self.model = model
         self._completion = (
@@ -46,6 +47,7 @@ class GroqClient:
         self._max_completion_tokens = max(1, max_completion_tokens)
         self._quota = quota
         self._on_quota = on_quota
+        self._is_cancelled = is_cancelled
         self.usage = {"calls": 0, "tokens": 0}
 
     def _retry_wait(self, error: RateLimitError) -> int:
@@ -111,7 +113,18 @@ class GroqClient:
         rate_waited[0] += seconds
         if self._on_retry:
             self._on_retry(attempt, seconds)
-        self._sleep(seconds)
+        if self._is_cancelled is None:
+            self._sleep(seconds)
+        else:
+            for _ in range(seconds):
+                self._check_cancelled()
+                self._sleep(1)
+            self._check_cancelled()
+
+    def _check_cancelled(self) -> None:
+        """Cooperate with user cancellation between calls and quota wait slices."""
+        if self._is_cancelled is not None and self._is_cancelled():
+            raise RunCancelled("cancelled_by_user")
 
     def _request(self, messages, rate_waited):
         rate_retries = 0
@@ -119,6 +132,7 @@ class GroqClient:
         input_tokens = estimate_input_tokens(messages)
         output_tokens = self._completion_budget(input_tokens)
         while True:
+            self._check_cancelled()
             reservation = None
             if self._quota:
                 try:
@@ -134,6 +148,7 @@ class GroqClient:
                     continue
                 self._quota_event(input_tokens, output_tokens)
             try:
+                self._check_cancelled()
                 self.usage["calls"] += 1
                 response = self._completion(
                     model=self.model,

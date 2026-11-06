@@ -10,6 +10,7 @@ import { RunProgress } from "@/components/run-progress";
 export default function RunInspector() {
   const {id}=useParams<{id:string}>(); const [run,setRun]=useState<Run|null>(null),[events,setEvents]=useState<RunEvent[]>([]);
   const [error,setError]=useState(""),[filter,setFilter]=useState("all"),[resume,setResume]=useState(0);
+  const [controlBusy,setControlBusy]=useState<"cancel"|"resume"|null>(null);
   const [lastPollAt,setLastPollAt]=useState<number|null>(null),[clock,setClock]=useState(Date.now());
   const active=!!run&&["queued","running"].includes(run.status);
   useEffect(()=>{if(!active)return;const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[active]);
@@ -25,10 +26,24 @@ export default function RunInspector() {
   const waiting=run?.status==="running"&&(run.activity?run.activity.phase==="waiting_quota":!!run.cooldown_until);
   const remainingSeconds=retryAt?Math.max(0,Math.ceil((new Date(retryAt).getTime()-clock)/1000)):0;
   const countdown=`${String(Math.floor(remainingSeconds/60)).padStart(2,"0")}:${String(remainingSeconds%60).padStart(2,"0")}`;
+  async function control(action:"cancel"|"resume") {
+    setControlBusy(action);setError("");
+    try {await api(`/runs/${id}/${action}`,{method:"POST"});setResume(value=>value+1);}
+    catch(cause) {setError(errorMessage(cause));}
+    finally {setControlBusy(null);}
+  }
   return <><PageHeader eyebrow="HARNESS / LIVE INSPECTOR" title="Theo dõi quá trình review" description="Các số liệu và sự kiện lấy từ lần chạy thực tế. Supervisor chọn một hành động; harness kiểm tra quyền, phạm vi và kết quả trước khi tiếp tục."/><ErrorBanner message={error}/>
-    {!run?<p>Đang tải lần chạy…</p>:<><div className="panel spread" aria-busy={["queued","running"].includes(run.status)}><span data-testid="run-status" role="status" aria-label={run.status === "running" ? (waiting ? "Đang chờ hạn mức Groq" : "Đang chạy review") : run.status} className={`status ${run.status} ${run.status === "running" && !waiting ? "run-live" : ""}`}>{waiting ? "waiting" : run.status}</span>{["queued","running"].includes(run.status) ? <span className="run-review-locked">Bản review sẽ mở khi xử lý xong</span> : <Link href={`/reviews/${run.review_id}`}>Mở bản review →</Link>}{(run.status==="interrupted"||(run.status==="failed"&&["rate_limited","quota_request_too_large"].includes(run.error_code??"")))&&<button onClick={async()=>{try{await api(`/runs/${id}/resume`,{method:"POST"});setResume(resume+1);}catch(e){setError(errorMessage(e));}}}>Tiếp tục từ checkpoint</button>}</div>
+    {!run?<p>Đang tải lần chạy…</p>:<><div className="panel spread" aria-busy={!!controlBusy}>
+      <span data-testid="run-status" role="status" aria-label={run.status === "running" ? (waiting ? "Đang chờ hạn mức Groq" : "Đang chạy review") : run.status} className={`status ${run.status} ${run.status === "running" && !waiting ? "run-live" : ""}`}>{waiting ? "waiting" : run.status}</span>
+      <div className="actions">
+        {["queued","running"].includes(run.status) ? <span className="run-review-locked">Bản review sẽ mở khi xử lý xong</span> : <Link href={`/reviews/${run.review_id}`}>Mở bản review →</Link>}
+        {(run.status==="interrupted"||(run.status==="failed"&&["rate_limited","quota_request_too_large"].includes(run.error_code??"")))&&<button disabled={!!controlBusy} onClick={()=>control("resume")}>{controlBusy==="resume"?"Đang tiếp tục…":"Tiếp tục từ checkpoint"}</button>}
+        {["queued","running","interrupted","failed"].includes(run.status)&&<button className="danger-button" disabled={!!controlBusy} onClick={()=>control("cancel")}>{controlBusy==="cancel"?"Đang dừng…":"Dừng review"}</button>}
+      </div>
+    </div>
+    {run.status==="cancelled"&&<div className="notice" role="status">Bạn đã dừng lượt review này. Bản review và kết quả đã lưu vẫn được giữ lại.</div>}
     {waiting && <div className="notice cooldown-notice"><strong data-testid="cooldown-countdown">{remainingSeconds>0?`Còn ${countdown} trước lần thử tiếp theo`:"Đã đến thời điểm thử lại; đang chờ cập nhật…"}</strong><span>{run.activity?.source==="live"?"Worker đang chờ hạn mức Groq; công việc chưa hoàn tất.":"Groq đang giới hạn lượt gọi; tiến độ đã được lưu tại checkpoint."}</span><span data-testid="run-heartbeat" className="run-heartbeat">Kết nối backend: {lastPollAt!==null&&clock-lastPollAt<5000?"hoạt động":"đang kiểm tra"}</span>{latestCooldown&&<span data-testid="last-provider-attempt">Lần thử Groq gần nhất: {new Date(latestCooldown.timestamp).toLocaleTimeString("vi-VN",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>}</div>}
-    {run.error_code&&<div className="error">Lần chạy dừng: {run.error_code}. Xem trace bên dưới trước khi chạy revision mới.</div>}
+    {run.error_code&&run.status!=="cancelled"&&<div className="error">Lần chạy dừng: {run.error_code}. Xem trace bên dưới trước khi chạy revision mới.</div>}
     {run.status==="incomplete"&&<div className="notice">Đã chạm giới hạn xử lý. Kết quả này chưa bao phủ hết tài liệu; hãy chạy một revision mới để tạo báo cáo hoàn chỉnh.</div>}
     <RunProgress run={run} waiting={!!waiting} lastPollAt={lastPollAt} clock={clock} disconnected={!!error}/>
     <div className="metrics">{[[`${run.processed}`,"Đoạn đã đọc"],[`${run.remaining}`,"Đoạn còn lại"],[`${run.step_count} / ${run.max_turns}`,"Lượt xử lý"],[`${run.usage.calls??0}`,"Lượt gọi mô hình"]].map(([v,t])=><div className="metric" key={t}><strong>{v}</strong><span>{t}</span></div>)}</div>

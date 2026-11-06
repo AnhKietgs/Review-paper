@@ -78,3 +78,24 @@ test("oversized request can be resumed from its saved checkpoint after a fix", a
   await page.goto("/runs/work-run");
   await expect(page.getByRole("button", { name: "Tiếp tục từ checkpoint" })).toBeVisible();
 });
+
+test("stop review while waiting keeps the review and shows cancelled state", async ({ page }) => {
+  let stopped = false;
+  await page.route("**/api/v1/runs/work-run/events?after=*", route => route.fulfill({ json: { items: [] } }));
+  await page.route("**/api/v1/runs/work-run", route => route.fulfill({ json: stopped ? {
+    ...initial, status: "cancelled", error_code: "cancelled_by_user",
+    activity: { ...activity("cancelled"), source: "checkpoint" },
+  } : { ...initial, activity: { ...activity("waiting_quota"), retry_at: new Date(Date.now() + 60_000).toISOString() } } }));
+  await page.route("**/api/v1/runs/work-run/cancel", route => {
+    expect(route.request().method()).toBe("POST");
+    stopped = true;
+    return route.fulfill({ json: { run_id: "work-run", review_id: "review", status: "cancelled" } });
+  });
+  await page.goto("/runs/work-run");
+  await page.getByRole("button", { name: "Dừng review", exact: true }).click();
+  await expect(page.getByTestId("run-status")).toHaveText("cancelled");
+  await expect(page.getByTestId("work-phase")).toHaveText("Lần chạy đã được hủy");
+  await expect(page.getByRole("link", { name: "Mở bản review" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Dừng review", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Lần chạy dừng: cancelled_by_user", { exact: false })).toHaveCount(0);
+});

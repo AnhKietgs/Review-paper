@@ -110,9 +110,17 @@ class RunWorker:
                 rate_limit_wait_seconds=settings.groq_rate_limit_wait_seconds,
                 max_completion_tokens=budget, on_retry=retry_event(role),
                 quota=self.quota, on_quota=quota_event(role),
+                is_cancelled=lambda: self._is_cancelled(run_id),
             )
             for role, (model, budget) in models.items()
         })
+
+    @staticmethod
+    def _is_cancelled(run_id: str) -> bool:
+        """Read cancellation outside provider calls without holding a write lock."""
+        with UnitOfWork() as unit:
+            row = unit.session.get(RunRow, run_id)
+            return row is None or row.status == "cancelled"
 
     @staticmethod
     def _freeze_review(session, review: ReviewRow, state) -> None:
@@ -233,6 +241,7 @@ class RunWorker:
     @staticmethod
     def _persist(state, events, usage, original_steps):
         with UnitOfWork() as unit:
+            unit.session.execute(text("BEGIN IMMEDIATE"))
             run = unit.session.get(RunRow, state.run_id)
             if run.status != "running" or run.step_count != original_steps:
                 return
