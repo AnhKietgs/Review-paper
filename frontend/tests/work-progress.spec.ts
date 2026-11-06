@@ -20,6 +20,22 @@ const initial: Run = {
   reference_assessments: {}, activity: activity("analyze"),
 };
 
+test("review budget stop explains partial results without prompting a costly restart", async ({ page }) => {
+  const run = {
+    ...initial, status: "incomplete", error_code: "review_token_budget_exhausted",
+    token_budget: { limit: 50000, spent: 48000, remaining: 2000 },
+    activity: activity("incomplete"),
+  };
+  await page.route("**/api/v1/runs/work-run/events?after=*", route => route.fulfill({ json: { items: [] } }));
+  await page.route("**/api/v1/runs/work-run", route => route.fulfill({ json: run }));
+  await page.goto("/runs/work-run");
+  await expect(page.getByTestId("review-token-budget")).toContainText("48.000 / 50.000");
+  await expect(page.getByText("Không đủ ngân sách token cho yêu cầu tiếp theo.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tiếp tục từ checkpoint" })).toHaveCount(0);
+  await expect(page.getByText("hãy chạy một revision mới", { exact: false })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Mở bản review →" })).toBeVisible();
+});
+
 test("work phases track polling without treating complete reading as a complete review", async ({ page }) => {
   let run = { ...initial, activity: {
     ...activity("analyze"), work: {

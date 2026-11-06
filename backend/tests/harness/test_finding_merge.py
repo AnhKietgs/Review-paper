@@ -88,6 +88,19 @@ def test_criterion_cap_counts_all_queues_but_still_merges_evidence(harness):
     assert runner.events.items[-1]["action"] == "finding_limit_reached"
 
 
+def test_invented_criterion_codes_cannot_bypass_rubric_allowance(harness):
+    runner, state = harness
+    stage(runner, state, *[
+        draft(criterion_code=f"invented-{index}", claim=f"Nhận xét {index}")
+        for index in range(5)
+    ])
+    assert not state.pending_findings
+    assert not state.findings
+    assert not state.omission_audits
+    assert all(event["action"] == "unknown_criterion_rejected"
+               for event in runner.events.items)
+
+
 def test_duplicates_merge_sources_and_preserve_first_system_id(harness):
     runner, state = harness
     stage(runner, state, draft())
@@ -156,6 +169,7 @@ def test_invalid_duplicate_cannot_poison_supported_evidence(harness):
 ])
 def test_distinct_keys_are_never_merged(harness, changes):
     runner, state = harness
+    runner.catalog.criteria = lambda *_args: [{"code": "method"}, {"code": "results"}]
     stage(runner, state, draft(), draft("second", **changes))
     assert len(state.pending_findings) == 2
 

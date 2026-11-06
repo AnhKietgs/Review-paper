@@ -135,6 +135,7 @@ class RunService:
         if row is None:
             raise NotFoundError("run_missing", "Run not found")
         state = RunMemory(self.session).load(run_id)
+        spent = max(state.token_spent, row.usage.get("tokens", 0))
         return {
             "id": row.id,
             "review_id": row.review_id,
@@ -142,8 +143,8 @@ class RunService:
             "step_count": row.step_count,
             "usage": row.usage,
             "token_budget": {
-                "limit": state.token_budget, "spent": state.token_spent,
-                "remaining": max(0, state.token_budget - state.token_spent),
+                "limit": state.token_budget, "spent": spent,
+                "remaining": max(0, state.token_budget - spent),
             },
             "error_code": row.error_code,
             "cooldown_until": state.cooldown_until,

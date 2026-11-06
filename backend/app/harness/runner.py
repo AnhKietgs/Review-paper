@@ -170,8 +170,19 @@ class AgentRunner:
     def _stage(
         self, state: RunState, drafts: list[dict], role: str, source_ids: list[str]
     ) -> None:
+        criterion_codes = {
+            item["code"] for item in self.catalog.criteria(
+                state.scope.rubric_id, state.scope.rubric_version,
+            )
+        }
         for draft in drafts:
             finding = FindingDraft.model_validate(draft).model_dump(mode="json")
+            if finding["criterion_code"] not in criterion_codes:
+                self._event(
+                    state, "harness", "unknown_criterion_rejected",
+                    "Finding does not belong to the frozen rubric",
+                )
+                continue
             # Model-generated IDs must never address an existing persisted finding.
             finding["id"] = str(uuid4())
             if finding["kind"] == "limitation":

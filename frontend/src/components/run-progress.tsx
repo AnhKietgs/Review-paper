@@ -22,6 +22,7 @@ const phases: Record<string, [string, string]> = {
 
 export function runErrorMessage(code: string): string {
   const messages: Record<string, string> = {
+    review_token_budget_exhausted: "Không đủ ngân sách token cho yêu cầu tiếp theo. Hệ thống đã dừng và giữ kết quả cùng checkpoint; bản review chưa hoàn chỉnh. Không tự tiếp tục hoặc đặt lại ngân sách.",
     token_work_item_too_large: "Một mục đầu vào hoặc phần hướng dẫn vẫn quá lớn để chia tiếp an toàn. Hệ thống đã dừng, không bỏ bớt nguồn hay tự chờ quota. Hãy rút gọn rubric hoặc xem trace để xác định mục quá dài.",
     provider_unavailable: "Chưa hoàn tất được yêu cầu tới Groq. Tiến độ đã lưu; bạn có thể tiếp tục từ checkpoint để thử lại phần còn dang dở.",
     provider_timeout: "Groq trả lời quá thời gian chờ. Tiến độ đã lưu; bạn có thể tiếp tục từ checkpoint.",
@@ -59,6 +60,11 @@ export function RunProgress({ run, waiting, lastPollAt, clock, disconnected }: {
     </div>
     {waiting && <p className="work-resume" data-testid="resume-work">Sau khi có quota, tiếp tục: <strong>{actionLabel(activity?.resume_action)}</strong>.</p>}
     {!!work?.token_tasks?.total && <p className="work-audit" data-testid="token-work-progress"><strong>Phần việc theo token: {work.token_tasks.done} / {work.token_tasks.total} đã hoàn tất trong bước hiện tại.</strong><span>Các phần đã xong được giữ tại checkpoint khi chờ quota.</span></p>}
+    {run.token_budget && <div className="work-coverage" data-testid="review-token-budget">
+      <div className="spread"><strong>Ngân sách token của review</strong><span>{run.token_budget.spent.toLocaleString("vi-VN")} / {run.token_budget.limit.toLocaleString("vi-VN")} token</span></div>
+      <progress aria-label="Ngân sách token đã tính" value={Math.min(run.token_budget.spent, run.token_budget.limit)} max={run.token_budget.limit}/>
+      <small>Số đã dùng hoặc dự trù tại checkpoint gần nhất, cộng chung các agent. Đây là ngân sách của lượt review, không phải quota ngày còn lại trên Groq.</small>
+    </div>}
     <div className="work-coverage">
       <div className="spread"><strong>Phạm vi đọc paper chính</strong><span data-testid="paper-coverage">{coverage.done} / {coverage.total} đoạn</span></div>
       {coverage.total > 0 && <progress aria-label="Phạm vi đọc paper chính" value={coverage.done} max={coverage.total}/>}

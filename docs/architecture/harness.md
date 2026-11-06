@@ -171,3 +171,35 @@ minimum source unit fails with `token_work_item_too_large`. It is not treated as
 temporary quota shortage and is not retried indefinitely. Large metadata is not
 silently truncated. In-flight cached work assumes unchanged prompt/model/budget
 configuration; changing those during a paused run may require a new revision.
+
+## Review token economy
+
+New runs snapshot `REVIEW_TOKEN_BUDGET` (default50,000 across all models) and
+`REVIEW_FINDINGS_PER_CRITERION` (default2). Each HTTP attempt reserves estimated
+input plus the output allowance before sending; retries and JSON repairs share
+the ledger. Reported usage reconciles successful requests; unknown usage remains
+conservatively charged and confirmed429 rejection releases the charge. At least
+the recorded run usage is restored for legacy runs. State preserves spending at
+the existing turn transaction boundary, including failure/cooldown. A hard
+process termination midturn can lose that turn's local accounting: this is an
+application admission guard, not an exact billing ledger or the organization's
+remaining daily quota.
+
+When the next request cannot fit, execution stops as `incomplete` with
+`review_token_budget_exhausted`, retaining pending work and completed subcall
+outputs. It is not automatically retried, frozen as a completed report or
+resumable through the ordinary endpoint. Changing environment settings affects
+new runs, not an existing run's frozen allowance. Starting a new revision spends
+a new budget and does not restore Groq daily quota.
+Startup recovery also ends legacy running/cooldown runs whose recorded spending
+already reaches the run allowance, before honoring an old quota deadline. It
+retains the saved work and sends no request to resume that depleted run.
+
+Producers receive remaining finding slots. Staging rejects codes outside the
+frozen rubric, merges duplicate claims before counting pending/final/omission
+findings, and skips extra unique drafts with a trace event. The first admitted
+drafts are retained; this does not rank all possible observations by importance.
+All assigned document text is still read. Reviewer-entered verify-only findings
+are retained. Verifier uses the same ID/status/reason contract with short reasons,
+at most4 topics/findings per work item and a2,048-token output allowance. Exact
+evidence, omission coverage and conservative uncertain judgments remain intact.

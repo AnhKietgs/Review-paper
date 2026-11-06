@@ -17,8 +17,9 @@ from app.agents.schemas import AgentAction, ScientificOutput
 from app.infrastructure.groq.fixture_client import FixtureClient
 
 
+@pytest.mark.parametrize("checkpoint_spent,reported_spent", [(49999, 0), (0, 49999)])
 def test_review_budget_stop_preserves_checkpoint_and_cannot_reset_by_resume(
-    api_client, review_seed, monkeypatch,
+    api_client, review_seed, monkeypatch, checkpoint_spent, reported_spent,
 ):
     from app.agents.schemas import AgentAction
     from app.harness.state import TurnProgress
@@ -32,7 +33,10 @@ def test_review_budget_stop_preserves_checkpoint_and_cannot_reset_by_resume(
     with UnitOfWork() as unit:
         state = RunMemory(unit.session).load(accepted["run_id"])
         state.llm_mode = "groq"
-        state.token_spent = 49999
+        state.token_spent = checkpoint_spent
+        unit.session.get(RunRow, accepted["run_id"]).usage = {
+            "tokens": reported_spent, "calls": 0,
+        }
         state.turn_progress = TurnProgress(action=AgentAction(
             action="analyze", reason="Continue selected work",
         ))
@@ -47,7 +51,7 @@ def test_review_budget_stop_preserves_checkpoint_and_cannot_reset_by_resume(
     monkeypatch.setattr("app.workers.run_worker.GroqClient", client)
     worker.tick()
     result = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
-    assert result["status"] == "incomplete"
+    assert result["status"] == "incomplete", result
     assert result["error_code"] == "review_token_budget_exhausted"
     assert result["token_budget"] == {"limit": 50000, "spent": 49999, "remaining": 1}
     assert calls == []
@@ -85,6 +89,28 @@ def test_oversized_context_failure_can_resume_its_existing_checkpoint(
         worker.tick()
     result = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
     assert result["status"] == "completed"
+
+
+def test_restart_stops_legacy_over_budget_run_even_during_quota_cooldown(
+    api_client, review_seed,
+):
+    review = review_seed(False)
+    accepted = api_client.post(f"/api/v1/reviews/{review['id']}/runs").json()
+    with UnitOfWork() as unit:
+        row = unit.session.get(RunRow, accepted["run_id"])
+        row.status = "running"
+        row.usage = {"calls": 20, "tokens": 50001}
+        state = RunMemory(unit.session).load(row.id)
+        state.llm_mode = "groq"
+        state.cooldown_until = datetime.now(timezone.utc) + timedelta(hours=1)
+        RunMemory(unit.session).save(state)
+    RunWorker.recover_interrupted()
+    result = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
+    assert result["status"] == "incomplete"
+    assert result["error_code"] == "review_token_budget_exhausted"
+    assert result["token_budget"]["spent"] == 50001
+    assert result["cooldown_until"] is None
+    assert result["remaining"] > 0
 
 
 def test_queue_restart_resume_and_no_duplicate_findings(api_client, review_seed):

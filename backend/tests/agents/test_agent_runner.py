@@ -327,7 +327,11 @@ def test_contribution_bad_quote_gets_one_source_bound_repair():
                     result.findings[0].evidence[0].quote = "not an exact quote"
             return result
 
-    state, events = execute(run_state(), ContributionClient())
+    class ContributionCatalog(Catalog):
+        def criteria(self, _rubric_id, _version):
+            return [{"code": "contribution", "question": "Assess contribution"}]
+
+    state, events = execute(run_state(), ContributionClient(), ContributionCatalog())
     assert state.status == "completed"
     assert state.repair_count == 1
     assert len(state.findings) == 1
@@ -734,7 +738,8 @@ def test_omission_topics_share_each_document_scan():
 
     client = SeveralTopics()
     state, _ = execute(
-        run_state(chunks=["main-1", "main-2", "main-3"]), client
+        run_state(chunks=["main-1", "main-2", "main-3"], max_findings_per_criterion=10),
+        client,
     )
     assert state.status == "completed"
     assert client.audit_sizes == [3, 3]

@@ -42,6 +42,7 @@ export interface Run {
   max_turns: number; error_code: string | null; cooldown_until: string | null;
   call_counts: Record<string, number>;
   usage: { calls?: number; tokens?: number };
+    token_budget?: { limit: number; spent: number; remaining: number };
   reference_assessments: Record<string, { status: string; reason: string }>;
   activity?: RunActivity;
 }

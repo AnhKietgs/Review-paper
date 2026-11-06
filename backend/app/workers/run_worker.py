@@ -12,6 +12,7 @@ from app.harness.activity import LIVE_ACTIVITY
 from app.harness.memory import RunMemory
 from app.harness.output_gate import OutputGate
 from app.harness.runner import AgentRunner
+from app.harness.token_budget import RunTokenBudget
 from app.infrastructure.groq.client import GroqClient
 from app.infrastructure.groq.fixture_client import FixtureClient
 from app.infrastructure.groq.router import GroqRouter
@@ -71,7 +72,7 @@ class RunWorker:
             requests_per_minute=settings.groq_requests_per_minute,
         )
 
-    def _create_groq_router(self, settings, run_id, events):
+    def _create_groq_router(self, settings, run_id, events, budget=None):
         """Rebuild adapters while keeping one shared model quota across turns."""
         def retry_event(role):
             def record(attempt, wait_seconds):
@@ -112,18 +113,19 @@ class RunWorker:
             "supervisor": (settings.groq_supervisor_model, 256),
             "scientific_review": (settings.groq_scientific_review_model, 3072),
             "related_work": (settings.groq_related_work_model, 2048),
-            "evidence_verifier": (settings.groq_evidence_verifier_model, 4096),
+            "evidence_verifier": (settings.groq_evidence_verifier_model, 2048),
         }
         return GroqRouter({
             role: GroqClient(
                 settings.groq_api_key, model,
                 rate_limit_wait_seconds=settings.groq_rate_limit_wait_seconds,
-                max_completion_tokens=budget, on_retry=retry_event(role),
+                max_completion_tokens=output_limit, on_retry=retry_event(role),
                 quota=self.quota, on_quota=quota_event(role),
                 is_cancelled=lambda: self._is_cancelled(run_id),
                 on_provider_event=provider_event(role),
+                budget=budget,
             )
-            for role, (model, budget) in models.items()
+            for role, (model, output_limit) in models.items()
         })
 
     @staticmethod
@@ -189,6 +191,24 @@ class RunWorker:
         )
 
     @staticmethod
+    def _recover_budget(unit, row, state) -> bool:
+        """Legacy cooldowns must not defer enforcement of a depleted run budget."""
+        state.token_spent = max(state.token_spent, row.usage.get("tokens", 0))
+        if state.llm_mode != "groq" or state.token_spent < state.token_budget:
+            return False
+        row.status = state.status = "incomplete"
+        row.error_code = state.error_code = "review_token_budget_exhausted"
+        row.finished_at = datetime.now(timezone.utc)
+        state.cooldown_until = None
+        RunMemory(unit.session).save(state)
+        RunEventRecorder(unit.session).append(row.id, RunEventInput(
+            agent="harness", action="review_budget_exhausted",
+            output_summary="Recorded spending already exceeds the review allowance",
+            payload={"limit": state.token_budget, "spent": state.token_spent},
+        ))
+        return True
+
+    @staticmethod
     def recover_interrupted() -> None:
         """Recover interrupted runs and completed reports from older versions."""
         with UnitOfWork() as unit:
@@ -196,6 +216,8 @@ class RunWorker:
                 select(RunRow).where(RunRow.status == "running")
             ):
                 state = RunMemory(unit.session).load(row.id)
+                if RunWorker._recover_budget(unit, row, state):
+                    continue
                 if state.cooldown_until is not None:
                     continue
                 row.status = "interrupted"
@@ -339,6 +361,8 @@ class RunWorker:
                 state = RunMemory(unit.session).load(run_id)
                 state.cooldown_until = None
                 original_steps = state.turn_count
+                recorded_usage = unit.session.get(RunRow, run_id).usage.get("tokens", 0)
+                state.token_spent = max(state.token_spent, recorded_usage)
                 catalog = SnapshotCatalog(SqlSourceCatalog(unit.session), state.scope)
             memory = RunMemory()
             events = RunEventRecorder(
@@ -347,12 +371,13 @@ class RunWorker:
             LIVE_ACTIVITY.publish(state)
             memory.save(state)
             settings = Settings.from_env()
+            budget = RunTokenBudget(state.token_budget, state.token_spent)
             llm = FixtureClient()
             try:
                 if state.llm_mode == "groq":
                     if not settings.groq_api_key:
                         raise LLMFailure("missing_groq_key")
-                    llm = self._create_groq_router(settings, run_id, events)
+                    llm = self._create_groq_router(settings, run_id, events, budget)
                 state = AgentRunner(llm, catalog, memory, events).run_turn(state)
             except RateLimitPause as exc:
                 state = memory.load(run_id)
@@ -386,11 +411,16 @@ class RunWorker:
                 state.error_code = (
                     str(exc) if isinstance(exc, LLMFailure) else "execution_failed"
                 )
+                if state.error_code == "review_token_budget_exhausted":
+                    state.status = "incomplete"
                 events.append(
                     run_id,
                     RunEventInput(
                         agent="harness",
-                        action="run_failed",
+                        action=(
+                            "review_budget_exhausted" if state.status == "incomplete"
+                            else "run_failed"
+                        ),
                         output_summary=state.error_code,
                         payload={
                             "provider_failure": exc.details,
@@ -398,6 +428,7 @@ class RunWorker:
                         } if isinstance(exc, ProviderFailure) else {},
                     ),
                 )
+            state.token_spent = budget.spent
             self._persist(state, events, llm.usage, original_steps)
             return True
         finally:

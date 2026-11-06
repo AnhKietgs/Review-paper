@@ -36,3 +36,9 @@ its late result is not applied after cancellation.
 revision, retaining the chosen action, split contexts and completed subcall
 outputs. It does not restart successful work or automatically resume failures.
 Permanent authentication, model and input errors require correcting the cause.
+
+`GET /runs/{id}` also returns `token_budget: {limit, spent, remaining}`. Spending
+includes conservative charges for attempts with unknown usage and is updated at
+checkpoint boundaries. `incomplete` with `review_token_budget_exhausted` retains
+partial work but cannot be resumed with this endpoint or exported as a completed
+report. It is distinct from provider quota exhaustion.

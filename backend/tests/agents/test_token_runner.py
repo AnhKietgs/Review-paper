@@ -83,6 +83,7 @@ def test_token_sized_calls_resume_only_unfinished_work_and_keep_source_offsets()
     state = RunState(
         run_id="run", review_id="review", remaining_chunk_ids=["main-1"],
         current_batch_ids=["main-1"],
+        max_findings_per_criterion=20,
         scope=RunScope(
             main_paper_id="main", main_version=1, rubric_id="rubric", rubric_version=1,
         ),

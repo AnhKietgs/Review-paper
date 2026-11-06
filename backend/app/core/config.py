@@ -7,7 +7,7 @@ from typing import Literal
 
 
 @dataclass(frozen=True)
-class Settings:
+class Settings:  # pylint: disable=too-many-instance-attributes
     """Configuration shared by API and worker."""
 
     data_dir: Path

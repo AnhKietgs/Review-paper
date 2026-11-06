@@ -84,13 +84,18 @@ class FixtureClient:
                 item for item in context["chunks"] if item["paper_id"] != main_id
             )
             left, right = _evidence(main), _evidence(related)
+            remaining = context.get("finding_policy", {}).get("remaining", {})
+            criterion = next((
+                item["code"] for item in context["criteria"]
+                if remaining.get(item["code"], 1) > 0
+            ), context["criteria"][0]["code"])
             return schema(
                 assessment="assessed",
                 reason="Fixture: đối chiếu hai trích đoạn.",
                 findings=[
                     {
                         "id": str(uuid4()),
-                        "criterion_code": "comparison",
+                        "criterion_code": criterion,
                         "claim": (
                             f"Paper chính ghi ‘{left['quote']}’; "
                             f"nguồn đối chiếu ghi ‘{right['quote']}’."
