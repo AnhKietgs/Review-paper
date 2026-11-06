@@ -146,7 +146,7 @@ def _verification_tasks(context, fits):
     tasks, current = [], []
     for finding in context["pending_findings"]:
         candidate = _cited_context(context, current + [finding])
-        if fits(candidate):
+        if len(current) < 4 and fits(candidate):
             current.append(finding)
             continue
         if current:
@@ -173,9 +173,9 @@ def _omission_tasks(context, fits):
     groups, current = [], []
     for finding in context["pending_findings"]:
         candidate = {**context, "pending_findings": current + [finding]}
-        if current and not all(
+        if current and (len(current) >= 4 or not all(
             fits(_with_atoms(candidate, [atom])) for atom in atoms
-        ):
+        )):
             groups.append(current)
             current = []
         current.append(finding)

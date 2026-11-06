@@ -5,7 +5,7 @@ from threading import Event, Lock, Thread
 
 from sqlalchemy import select, text
 
-from app.agents.ports import LLMFailure, RateLimitPause
+from app.agents.ports import LLMFailure, ProviderFailure, RateLimitPause
 from app.core.config import Settings
 from app.harness.events import RunEventInput, RunEventRecorder
 from app.harness.activity import LIVE_ACTIVITY
@@ -98,6 +98,16 @@ class RunWorker:
                 ))
             return record
 
+        def provider_event(role):
+            def record(payload):
+                retrying = payload["retrying"]
+                events.append(run_id, RunEventInput(
+                    agent=role,
+                    action="provider_transient_retry" if retrying else "provider_error",
+                    output_summary=payload["error_code"], payload=payload,
+                ))
+            return record
+
         models = {
             "supervisor": (settings.groq_supervisor_model, 256),
             "scientific_review": (settings.groq_scientific_review_model, 3072),
@@ -111,6 +121,7 @@ class RunWorker:
                 max_completion_tokens=budget, on_retry=retry_event(role),
                 quota=self.quota, on_quota=quota_event(role),
                 is_cancelled=lambda: self._is_cancelled(run_id),
+                on_provider_event=provider_event(role),
             )
             for role, (model, budget) in models.items()
         })
@@ -381,6 +392,10 @@ class RunWorker:
                         agent="harness",
                         action="run_failed",
                         output_summary=state.error_code,
+                        payload={
+                            "provider_failure": exc.details,
+                            "retryable": exc.retryable,
+                        } if isinstance(exc, ProviderFailure) else {},
                     ),
                 )
             self._persist(state, events, llm.usage, original_steps)

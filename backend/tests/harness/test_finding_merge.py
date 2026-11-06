@@ -74,6 +74,20 @@ def verify(runner, state):
     runner._verify(state, ToolGateway(runner.catalog, runner.events, state.run_id))
 
 
+def test_criterion_cap_counts_all_queues_but_still_merges_evidence(harness):
+    runner, state = harness
+    state.max_findings_per_criterion = 2
+    stage(runner, state, draft(), draft(claim="Mẫu được tuyển tại một trường."))
+    canonical_id = state.pending_findings[0]["id"]
+    stage(runner, state, draft("other", "page-2"))
+    assert state.pending_findings[0]["id"] == canonical_id
+    assert len(state.pending_findings[0]["evidence"]) == 2
+    stage(runner, state, draft(claim="không nêu cỡ mẫu", kind="omission"))
+    assert not state.omission_audits
+    assert len(state.pending_findings) == 2
+    assert runner.events.items[-1]["action"] == "finding_limit_reached"
+
+
 def test_duplicates_merge_sources_and_preserve_first_system_id(harness):
     runner, state = harness
     stage(runner, state, draft())

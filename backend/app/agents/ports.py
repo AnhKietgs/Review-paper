@@ -26,6 +26,15 @@ class RunCancelled(LLMFailure):
     """The user stopped execution; no further provider attempt is allowed."""
 
 
+class ProviderFailure(LLMFailure):
+    """A classified upstream failure with allowlisted diagnostic metadata."""
+
+    def __init__(self, code: str, details: dict, retryable: bool):
+        super().__init__(code)
+        self.details = details
+        self.retryable = retryable
+
+
 class RateLimitPause(LLMFailure):
     """Retryable provider limit with a sanitized delay in seconds."""
 

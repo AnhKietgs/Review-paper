@@ -79,6 +79,23 @@ def test_verifier_packs_small_groups_and_keeps_all_claims_and_cited_passages():
         assert task["chunks"][0]["spans"][0] == span_source(chunk())["spans"][0]
 
 
+@pytest.mark.parametrize("omission", [False, True])
+def test_verifier_output_groups_remain_bounded_even_when_input_fits(omission):
+    value = context([chunk()])
+    value["pending_findings"] = findings(11)
+    if omission:
+        value["omission_audit"] = True
+        value["pending_findings"] = [
+            {**item, "kind": "omission", "evidence": []}
+            for item in value["pending_findings"]
+        ]
+    tasks = partition_work("evidence_verifier", value, lambda _: True)
+    assert all(len(task["pending_findings"]) <= 4 for task in tasks)
+    assert {item["id"] for task in tasks for item in task["pending_findings"]} == {
+        item["id"] for item in value["pending_findings"]
+    }
+
+
 def test_omission_audit_checks_every_span_for_every_topic_before_absence():
     value = context([chunk()])
     value["omission_audit"] = True

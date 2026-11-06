@@ -29,3 +29,10 @@ separately. Cancellation and final result persistence are serialized so late
 results cannot overwrite cancellation. Groq attempts check cancellation before
 requests and during quota waits; a request already sent cannot be revoked, but
 its late result is not applied after cancellation.
+
+`POST /runs/{id}/resume` accepts interrupted runs and recoverable failed runs
+(`rate_limited`, `quota_request_too_large`, `provider_unavailable`,
+`provider_timeout`, `provider_connection_error`). It queues the same run and
+revision, retaining the chosen action, split contexts and completed subcall
+outputs. It does not restart successful work or automatically resume failures.
+Permanent authentication, model and input errors require correcting the cause.

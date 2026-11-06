@@ -104,3 +104,17 @@ test("stop review while waiting keeps the review and shows cancelled state", asy
   await expect(page.getByRole("button", { name: "Dừng review", exact: true })).toHaveCount(0);
   await expect(page.getByText("Lần chạy dừng: cancelled_by_user", { exact: false })).toHaveCount(0);
 });
+
+test("provider failure keeps subtask progress and offers explicit checkpoint resume", async ({ page }) => {
+  await page.route("**/api/v1/runs/work-run/events?after=*", route => route.fulfill({ json: { items: [] } }));
+  await page.route("**/api/v1/runs/work-run", route => route.fulfill({ json: {
+    ...initial, status: "failed", error_code: "provider_unavailable",
+    activity: { ...activity("failed"), source: "checkpoint", work: {
+      ...activity("failed").work, token_tasks: { done: 1, total: 3 },
+    } },
+  } }));
+  await page.goto("/runs/work-run");
+  await expect(page.getByRole("button", { name: "Tiếp tục từ checkpoint" })).toBeVisible();
+  await expect(page.getByTestId("token-work-progress")).toContainText("1 / 3");
+  await expect(page.getByText("Chưa hoàn tất được yêu cầu tới Groq.", { exact: false })).toBeVisible();
+});

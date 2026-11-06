@@ -20,6 +20,8 @@ class Settings:
     groq_rate_limit_wait_seconds: int
     groq_tokens_per_minute: int = 8000
     groq_requests_per_minute: int = 30
+    review_token_budget: int = 50000
+    review_findings_per_criterion: int = 2
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -51,5 +53,9 @@ class Settings:
             ),
             groq_requests_per_minute=max(
                 1, int(os.getenv("GROQ_REQUESTS_PER_MINUTE", "30"))
+            ),
+            review_token_budget=max(1, int(os.getenv("REVIEW_TOKEN_BUDGET", "50000"))),
+            review_findings_per_criterion=max(
+                1, int(os.getenv("REVIEW_FINDINGS_PER_CRITERION", "2")),
             ),
         )

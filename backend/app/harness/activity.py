@@ -95,6 +95,11 @@ class LiveActivity:
                 if wait > 0:
                     value["phase"] = "waiting_quota"
                     value["retry_at"] = (now + timedelta(seconds=wait)).isoformat()
+            elif event.action == "provider_transient_retry":
+                value["phase"] = "retrying_provider"
+                value["retry_at"] = (now + timedelta(
+                    seconds=event.payload.get("wait_seconds", 0),
+                )).isoformat()
         with self._lock:
             self._items[state.run_id] = value
 

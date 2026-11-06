@@ -17,6 +17,48 @@ from app.agents.schemas import AgentAction, ScientificOutput
 from app.infrastructure.groq.fixture_client import FixtureClient
 
 
+def test_review_budget_stop_preserves_checkpoint_and_cannot_reset_by_resume(
+    api_client, review_seed, monkeypatch,
+):
+    from app.agents.schemas import AgentAction
+    from app.harness.state import TurnProgress
+    from app.infrastructure.groq.client import GroqClient
+
+    monkeypatch.setenv("REVIEW_TOKEN_BUDGET", "50000")
+    review = review_seed(False)
+    accepted = api_client.post(f"/api/v1/reviews/{review['id']}/runs").json()
+    worker = RunWorker()
+    worker.tick()
+    with UnitOfWork() as unit:
+        state = RunMemory(unit.session).load(accepted["run_id"])
+        state.llm_mode = "groq"
+        state.token_spent = 49999
+        state.turn_progress = TurnProgress(action=AgentAction(
+            action="analyze", reason="Continue selected work",
+        ))
+        RunMemory(unit.session).save(state)
+        original_batch = list(state.current_batch_ids)
+    calls = []
+
+    def client(*args, **kwargs):
+        return GroqClient(*args, **kwargs, completion=lambda **_: calls.append(1))
+
+    monkeypatch.setenv("GROQ_API_KEY", "fake-for-offline-test")
+    monkeypatch.setattr("app.workers.run_worker.GroqClient", client)
+    worker.tick()
+    result = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
+    assert result["status"] == "incomplete"
+    assert result["error_code"] == "review_token_budget_exhausted"
+    assert result["token_budget"] == {"limit": 50000, "spent": 49999, "remaining": 1}
+    assert calls == []
+    assert api_client.post(f"/api/v1/runs/{accepted['run_id']}/resume").status_code == 409
+    with UnitOfWork() as unit:
+        saved = RunMemory(unit.session).load(accepted["run_id"])
+        assert saved.current_batch_ids == original_batch
+        assert saved.turn_progress.action.action == "analyze"
+    assert worker.tick() is False
+
+
 def test_oversized_context_failure_can_resume_its_existing_checkpoint(
     api_client, review_seed, monkeypatch,
 ):
@@ -343,3 +385,36 @@ def test_persist_and_cancel_serialize_before_reading_run_status(
         saving.result(timeout=10)
         assert cancelling.result(timeout=10).status_code == 200
     assert api_client.get(f"/api/v1/runs/{run_id}").json()["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("code", [
+    "provider_unavailable", "provider_timeout", "provider_connection_error",
+])
+def test_provider_failure_resumes_existing_successful_subtask_checkpoint(
+    api_client, review_seed, code,
+):
+    from app.harness.state import TurnProgress
+
+    review = review_seed(False)
+    accepted = api_client.post(f"/api/v1/reviews/{review['id']}/runs").json()
+    run_id = accepted["run_id"]
+    with UnitOfWork() as unit:
+        row = unit.session.get(RunRow, run_id)
+        row.status, row.error_code = "failed", code
+        state = RunMemory(unit.session).load(run_id)
+        state.status, state.error_code = "failed", code
+        state.turn_progress = TurnProgress(
+            action={"action": "verify", "reason": "Resume"},
+            work_contexts=[{"part": i} for i in range(3)],
+            work_outputs=[{"assessments": []}],
+        )
+        RunMemory(unit.session).save(state)
+    result = api_client.post(f"/api/v1/runs/{run_id}/resume")
+    assert result.status_code == 202
+    assert result.json()["run_id"] == run_id
+    assert result.json()["review_id"] == accepted["review_id"]
+    with UnitOfWork() as unit:
+        saved = RunMemory(unit.session).load(run_id)
+        assert len(saved.turn_progress.work_outputs) == 1
+        assert len(saved.turn_progress.work_contexts) == 3
+        assert saved.turn_progress.action.action == "verify"

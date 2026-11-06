@@ -11,6 +11,7 @@ const phases: Record<string, [string, string]> = {
   audit_omission: ["Đang rà thiếu thông tin", "Kiểm tra các chủ đề còn thiếu trên toàn bộ văn bản paper chính."],
   finish: ["Đang hoàn thiện bản review", "Tổng hợp kết quả và phạm vi đã kiểm tra."],
   waiting_quota: ["Đang chờ quota Groq", "Công việc đang tạm chờ hạn mức. Hệ thống sẽ thử tiếp tục khi đến thời điểm được phép gọi Groq."],
+  retrying_provider: ["Đang thử lại yêu cầu Groq", "Có lỗi tạm thời. Hệ thống giữ phần đã xong và chỉ thử lại phần đang dang dở, với số lần giới hạn."],
   queued: ["Đang chờ đến lượt xử lý", "Worker sẽ bắt đầu khi lượt xử lý hiện tại kết thúc."],
   completed: ["Review đã hoàn tất", "Mở bản review để xem kết quả và trạng thái bằng chứng."],
   failed: ["Lần chạy đã dừng do lỗi", "Xem thông báo và nhật ký thực thi để biết nguyên nhân."],
@@ -18,6 +19,20 @@ const phases: Record<string, [string, string]> = {
   incomplete: ["Đã chạm giới hạn xử lý", "Kết quả chưa hoàn chỉnh; xem phạm vi đọc và công việc còn lại bên dưới."],
   cancelled: ["Lần chạy đã được hủy", "Worker không tiếp tục xử lý bản review này."],
 };
+
+export function runErrorMessage(code: string): string {
+  const messages: Record<string, string> = {
+    token_work_item_too_large: "Một mục đầu vào hoặc phần hướng dẫn vẫn quá lớn để chia tiếp an toàn. Hệ thống đã dừng, không bỏ bớt nguồn hay tự chờ quota. Hãy rút gọn rubric hoặc xem trace để xác định mục quá dài.",
+    provider_unavailable: "Chưa hoàn tất được yêu cầu tới Groq. Tiến độ đã lưu; bạn có thể tiếp tục từ checkpoint để thử lại phần còn dang dở.",
+    provider_timeout: "Groq trả lời quá thời gian chờ. Tiến độ đã lưu; bạn có thể tiếp tục từ checkpoint.",
+    provider_connection_error: "Không kết nối được tới Groq. Kiểm tra kết nối mạng rồi tiếp tục từ checkpoint.",
+    provider_auth_error: "Groq từ chối xác thực hoặc quyền truy cập. Kiểm tra API key và cấu hình backend trước khi chạy lại.",
+    provider_model_unavailable: "Groq trả HTTP 404. Kiểm tra tên model và cấu hình kết nối trong backend.",
+    provider_invalid_request: "Groq từ chối nội dung hoặc tham số yêu cầu. Xem mã HTTP trong nhật ký thực thi để kiểm tra.",
+    provider_api_error: "Có lỗi API Groq chưa được phân loại. Xem loại lỗi và thông tin an toàn trong nhật ký thực thi.",
+  };
+  return messages[code] ?? `Lần chạy dừng: ${code}. Xem trace bên dưới trước khi chạy revision mới.`;
+}
 
 export function actionLabel(action: string | null | undefined): string {
   return action && phases[action] ? phases[action][0].replace(/^Đang /, "") : "công việc đang dang dở";

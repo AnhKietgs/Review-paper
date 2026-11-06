@@ -2,6 +2,7 @@
 
 from app.harness.state import RunState
 from app.harness.evidence import span_source
+from app.harness.finding_limits import finding_policy
 
 
 class ContextBuilder:
@@ -24,6 +25,7 @@ class ContextBuilder:
                 [span_source(chunk) for chunk in chunks] if include_spans else chunks
             ),
             "criteria": criteria,
+            "finding_policy": finding_policy(state, criteria),
             "pending_findings": state.pending_findings,
             "reference_assessments": state.reference_assessments,
         }

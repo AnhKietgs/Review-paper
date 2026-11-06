@@ -46,6 +46,16 @@ For PDF, a locator is a one-based page. For DOCX, it is a one-based nonempty par
 
 The run inspector renders persisted events; its diagram reflects actual call counts. It does not invent intermediate agent activity. Failed runs can be inspected, while interrupted runs can be explicitly resumed from their saved state.
 
+Provider recovery distinguishes timeout, connection, authentication, missing model,
+invalid request and temporary HTTP failures. Timeout/connection/408/409/5xx may
+retry twice per structured generation with 2/4-second backoff, respecting numeric
+or HTTP-date Retry-After. A delay above 30 seconds stops inline recovery; the run
+retains its checkpoint for explicit resume. Quota handling remains separate and
+can add its own wait. Cancellation is checked during backoff. Trace records only
+safe failure type, status, request ID and retry decision, never raw response
+bodies, prompts or credentials. Legacy provider_unavailable traces cannot reveal
+the historical upstream cause that the old adapter discarded.
+
 ## Consolidation before verification
 
 The harness consolidates drafts before adding verification or repair work. Claim

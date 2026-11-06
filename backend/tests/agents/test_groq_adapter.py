@@ -1,15 +1,143 @@
 """Bounded provider retry, schema repair and sanitized failure."""
 
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 
 import httpx
 import pytest
-from groq import APIStatusError, RateLimitError
+from groq import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
 from app.agents.ports import LLMFailure, RateLimitPause
 from app.agents.schemas import AgentAction
 from app.infrastructure.groq.client import GroqClient
 from app.infrastructure.groq.quota import GroqQuota
+
+
+@pytest.mark.parametrize("failure", ["timeout", "connection", 503, 502, 408])
+def test_transient_provider_error_retries_then_recovers(failure):
+    calls, sleeps, events = [], [], []
+
+    def completion(**_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            request = httpx.Request("POST", "https://example.invalid")
+            if failure == "timeout":
+                raise APITimeoutError(request=request)
+            if failure == "connection":
+                raise APIConnectionError(request=request)
+            raise APIStatusError(
+                "secret-token and document text", body={"private": "secret-token"},
+                response=httpx.Response(failure, request=request, headers={
+                    "x-request-id": "req-test-1",
+                }),
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"action":"finish","reason":"Done"}',
+            ))], usage=SimpleNamespace(total_tokens=10),
+        )
+
+    adapter = GroqClient(
+        "secret-token", "model", completion=completion,
+        sleep=sleeps.append, on_provider_event=events.append,
+    )
+    assert adapter.generate_json([], AgentAction).action == "finish"
+    assert len(calls) == 2
+    assert sleeps == [2]
+    assert events[0]["retrying"] is True
+    assert "secret-token" not in str(events)
+
+
+def test_provider_outage_stops_after_two_retries_with_safe_details():
+    calls, sleeps, events = [], [], []
+
+    def completion(**_kwargs):
+        calls.append(1)
+        raise APIStatusError(
+            "secret-token", body={"prompt": "private document"},
+            response=httpx.Response(
+                503, headers={"x-request-id": "req-abc"},
+                request=httpx.Request("POST", "https://example.invalid"),
+            ),
+        )
+
+    adapter = GroqClient(
+        "secret-token", "model", completion=completion,
+        sleep=sleeps.append, on_provider_event=events.append,
+    )
+    with pytest.raises(LLMFailure, match="provider_unavailable") as error:
+        adapter.generate_json([], AgentAction)
+    assert len(calls) == 3
+    assert sleeps == [2, 4]
+    assert error.value.details["http_status"] == 503
+    assert error.value.details["request_id"] == "req-abc"
+    assert events[-1]["retrying"] is False
+    assert "private document" not in str(events)
+    assert "secret-token" not in str(error.value.details)
+
+
+@pytest.mark.parametrize("retry_after", ["120", "http-date"])
+def test_long_provider_retry_after_does_not_retry_early(retry_after):
+    calls, sleeps = [], []
+    if retry_after == "http-date":
+        retry_after = format_datetime(datetime.now(timezone.utc) + timedelta(minutes=2))
+
+    def completion(**_kwargs):
+        calls.append(1)
+        raise APIStatusError(
+            "temporary", body=None, response=httpx.Response(
+                503, headers={"retry-after": retry_after},
+                request=httpx.Request("POST", "https://example.invalid"),
+            ),
+        )
+
+    adapter = GroqClient("fake", "model", completion=completion, sleep=sleeps.append)
+    with pytest.raises(LLMFailure, match="provider_unavailable"):
+        adapter.generate_json([], AgentAction)
+    assert calls == [1]
+    assert not sleeps
+
+
+def test_cancel_during_provider_backoff_prevents_another_call():
+    from app.agents.ports import RunCancelled
+
+    calls, sleeps = [], []
+
+    def completion(**_kwargs):
+        calls.append(1)
+        raise APITimeoutError(request=httpx.Request("POST", "https://example.invalid"))
+
+    adapter = GroqClient(
+        "fake", "model", completion=completion, sleep=sleeps.append,
+        is_cancelled=lambda: bool(sleeps),
+    )
+    with pytest.raises(RunCancelled):
+        adapter.generate_json([], AgentAction)
+    assert calls == [1]
+    assert sleeps == [1]
+
+
+@pytest.mark.parametrize("status,code", [
+    (400, "provider_invalid_request"), (401, "provider_auth_error"),
+    (403, "provider_auth_error"), (404, "provider_model_unavailable"),
+])
+def test_permanent_provider_error_is_classified_without_retry(status, code):
+    calls = []
+
+    def completion(**_kwargs):
+        calls.append(1)
+        raise APIStatusError(
+            "secret-token", body=None,
+            response=httpx.Response(
+                status, request=httpx.Request("POST", "https://example.invalid"),
+            ),
+        )
+
+    adapter = GroqClient("secret-token", "model", completion=completion)
+    with pytest.raises(LLMFailure, match=code):
+        adapter.generate_json([], AgentAction)
+    assert len(calls) == 1
 
 
 def test_cancel_during_quota_wait_prevents_another_provider_call():

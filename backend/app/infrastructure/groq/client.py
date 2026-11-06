@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.agents.ports import LLMFailure, RateLimitPause, RunCancelled
 from app.infrastructure.groq.quota import GroqQuota, estimate_input_tokens
+from app.infrastructure.groq.failures import provider_failure, provider_retry_delay
 
 MAX_RATE_LIMIT_WAIT_SECONDS = 300
 
@@ -31,6 +32,8 @@ class GroqClient:
         quota: GroqQuota | None = None,
         on_quota=None,
         is_cancelled=None,
+        on_provider_event=None,
+        budget=None,
     ):
         self.model = model
         self._completion = (
@@ -46,7 +49,9 @@ class GroqClient:
         self._rate_limit_wait_seconds = max(1, rate_limit_wait_seconds)
         self._max_completion_tokens = max(1, max_completion_tokens)
         self._quota = quota
-        self._on_quota = on_quota
+        self._events = {
+            "quota": on_quota, "provider": on_provider_event, "budget": budget,
+        }
         self._is_cancelled = is_cancelled
         self.usage = {"calls": 0, "tokens": 0}
 
@@ -97,8 +102,8 @@ class GroqClient:
         return min(self._max_completion_tokens, available)
 
     def _quota_event(self, input_tokens, output_tokens, wait_seconds=0) -> None:
-        if self._on_quota:
-            self._on_quota({
+        if self._events["quota"]:
+            self._events["quota"]({
                 "model": self.model,
                 "estimated_input_tokens": input_tokens,
                 "reserved_output_tokens": output_tokens,
@@ -113,6 +118,10 @@ class GroqClient:
         rate_waited[0] += seconds
         if self._on_retry:
             self._on_retry(attempt, seconds)
+        self._sleep_interruptibly(seconds)
+
+    def _sleep_interruptibly(self, seconds: int) -> None:
+        """Both quota and provider recovery waits remain cancellable."""
         if self._is_cancelled is None:
             self._sleep(seconds)
         else:
@@ -126,13 +135,16 @@ class GroqClient:
         if self._is_cancelled is not None and self._is_cancelled():
             raise RunCancelled("cancelled_by_user")
 
-    def _request(self, messages, rate_waited):
+    def _request(self, messages, rate_waited, provider_retries):
         rate_retries = 0
         json_retries = 0
         input_tokens = estimate_input_tokens(messages)
         output_tokens = self._completion_budget(input_tokens)
+        budget = self._events["budget"]
         while True:
             self._check_cancelled()
+            if budget:
+                budget.check(input_tokens + output_tokens)
             reservation = None
             if self._quota:
                 try:
@@ -149,6 +161,7 @@ class GroqClient:
                 self._quota_event(input_tokens, output_tokens)
             try:
                 self._check_cancelled()
+                charged = budget.reserve(input_tokens + output_tokens) if budget else 0
                 self.usage["calls"] += 1
                 response = self._completion(
                     model=self.model,
@@ -159,10 +172,14 @@ class GroqClient:
                 )
                 tokens = getattr(response.usage, "total_tokens", 0) or 0
                 self.usage["tokens"] += tokens
+                if budget and tokens > 0:
+                    budget.reconcile(charged, tokens)
                 if reservation is not None and tokens > 0:
                     self._quota.reconcile(reservation, tokens)
                 return response.choices[0].message.content
             except RateLimitError as exc:
+                if budget:
+                    budget.reconcile(charged, 0)
                 wait_seconds = self._retry_wait(exc)
                 if reservation is not None:
                     self._quota.reconcile(reservation, 0)
@@ -173,8 +190,6 @@ class GroqClient:
                     rate_waited, rate_retries,
                 )
             except APIError as exc:
-                if getattr(exc, "status_code", None) == 413:
-                    raise LLMFailure("request_too_large") from exc
                 body = getattr(exc, "body", None)
                 error = body.get("error", body) if isinstance(body, dict) else None
                 code = error.get("code") if isinstance(error, dict) else None
@@ -186,14 +201,32 @@ class GroqClient:
                         raise LLMFailure("invalid_model_output") from exc
                     json_retries += 1
                     continue
-                raise LLMFailure("provider_unavailable") from exc
+                self._handle_provider_error(exc, provider_retries)
+
+    def _handle_provider_error(self, error, retries):
+        """Retry temporary failures at most twice across one structured generation."""
+        failure = provider_failure(error)
+        retries[0] += 1
+        delay = provider_retry_delay(error, retries[0])
+        retrying = failure.retryable and retries[0] <= 2 and delay <= 30
+        if self._events["provider"]:
+            self._events["provider"]({
+                **failure.details, "model": self.model, "error_code": str(failure),
+                "retryable": failure.retryable, "retrying": retrying,
+                "retry_number": retries[0], "max_retries": 2,
+                "wait_seconds": delay if retrying else 0,
+            })
+        if not retrying:
+            raise failure from error
+        self._sleep_interruptibly(delay)
 
     def generate_json(self, messages, schema):
         """Parse structured output and allow one schema-only repair attempt."""
         rate_waited = [0]
+        provider_retries = [0]
         request = self.schema_request(messages, schema)
         for attempt in range(2):
-            content = self._request(request, rate_waited)
+            content = self._request(request, rate_waited, provider_retries)
             try:
                 return schema.model_validate_json(content or "")
             except ValidationError as exc:

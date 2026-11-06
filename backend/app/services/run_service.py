@@ -77,12 +77,15 @@ class RunService:
             raise ConflictError(
                 "run_active", "This review already has an unfinished run"
             ) from exc
+        settings = Settings.from_env()
         state = RunState(
             run_id=run.id,
             review_id=revision.id,
             scope=scope,
             remaining_chunk_ids=chunk_ids,
-            llm_mode=Settings.from_env().demo_llm_mode,
+            llm_mode=settings.demo_llm_mode,
+            token_budget=settings.review_token_budget,
+            max_findings_per_criterion=settings.review_findings_per_criterion,
         )
         if mode == "verify":
             state.remaining_chunk_ids = []
@@ -138,6 +141,10 @@ class RunService:
             "status": row.status,
             "step_count": row.step_count,
             "usage": row.usage,
+            "token_budget": {
+                "limit": state.token_budget, "spent": state.token_spent,
+                "remaining": max(0, state.token_budget - state.token_spent),
+            },
             "error_code": row.error_code,
             "cooldown_until": state.cooldown_until,
             "batch_count": state.batch_count,
@@ -165,7 +172,8 @@ class RunService:
             raise NotFoundError("run_missing", "Run not found")
         if row.status != "interrupted" and not (
             row.status == "failed" and row.error_code in {
-                "rate_limited", "quota_request_too_large",
+                "rate_limited", "quota_request_too_large", "provider_unavailable",
+                "provider_timeout", "provider_connection_error",
             }
         ):
             raise ConflictError("not_resumable", "Run cannot resume")

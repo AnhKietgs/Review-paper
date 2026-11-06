@@ -13,6 +13,7 @@ from app.harness.document_queue import DocumentQueue
 from app.harness.events import RunEventInput, RunEventRecorder
 from app.harness.evidence import EvidenceResolutionError, EvidenceResolver
 from app.harness.finding_merge import finding_key, merge_evidence
+from app.harness.finding_limits import finding_counts
 from app.harness.memory import RunMemory
 from app.harness.output_gate import OutputGate
 from app.harness.state import RunState, TurnProgress
@@ -185,17 +186,27 @@ class AgentRunner:
                     finding["claim"] = omission.group(1).rstrip(". ")
             if finding["kind"] == "omission":
                 finding["evidence"] = []
-                if not self._merge_duplicate(state, finding):
-                    state.omission_audits.append(
-                        {"finding": finding, "checked": 0, "ambiguous": False}
-                    )
-                    self._event(
-                        state, "harness", "omission_deferred",
-                        "Waiting for full main-paper coverage",
-                        finding_id=finding["id"], topic=finding["claim"],
-                    )
-                continue
             if self._merge_duplicate(state, finding):
+                continue
+            if (
+                finding_counts(state)[finding["criterion_code"]]
+                >= state.max_findings_per_criterion
+            ):
+                self._event(
+                    state, "harness", "finding_limit_reached",
+                    "Criterion already has its allowed findings",
+                    criterion_code=finding["criterion_code"],
+                )
+                continue
+            if finding["kind"] == "omission":
+                state.omission_audits.append(
+                    {"finding": finding, "checked": 0, "ambiguous": False}
+                )
+                self._event(
+                    state, "harness", "omission_deferred",
+                    "Waiting for full main-paper coverage",
+                    finding_id=finding["id"], topic=finding["claim"],
+                )
                 continue
             result = self.output_gate.validate(finding, state.scope)
             self._event(
