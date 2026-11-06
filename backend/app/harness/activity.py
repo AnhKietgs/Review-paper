@@ -33,6 +33,12 @@ def build_activity(state: RunState, status: str) -> dict:
             if phase == "waiting_quota" else None
         ),
         "work": {
+            "token_tasks": {
+                "done": len(state.turn_progress.work_outputs)
+                if state.turn_progress else 0,
+                "total": len(state.turn_progress.work_contexts)
+                if state.turn_progress else 0,
+            },
             "paper_read": {
                 "done": len(set(state.processed_chunk_ids)),
                 "total": len(set(

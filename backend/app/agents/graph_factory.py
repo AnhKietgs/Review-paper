@@ -24,8 +24,8 @@ class AgentFactory:
     """Build a role graph without tools or filesystem access in its nodes."""
 
     @staticmethod
-    def build(role: str, llm: LLMPort):
-        """Compile a LangGraph that invokes one structured model operation."""
+    def request(role: str, llm: LLMPort, context: dict):
+        """Share the exact prompt, context and schema with budget planning."""
         contracts = {
             "supervisor": (AgentAction, "supervisor.md"),
             "scientific_review": (
@@ -48,17 +48,17 @@ class AgentFactory:
             encoding="utf-8"
         )
 
+        return [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+        ], schema
+
+    @staticmethod
+    def build(role: str, llm: LLMPort):
+        """Compile a LangGraph that invokes one structured model operation."""
         def generate(state: GraphState) -> dict:
-            result = llm.generate_json(
-                [
-                    {"role": "system", "content": prompt},
-                    {
-                        "role": "user",
-                        "content": json.dumps(state["context"], ensure_ascii=False),
-                    },
-                ],
-                schema,
-            )
+            messages, schema = AgentFactory.request(role, llm, state["context"])
+            result = llm.generate_json(messages, schema)
             return {"output": result.model_dump(mode="json")}
 
         graph = StateGraph(GraphState)

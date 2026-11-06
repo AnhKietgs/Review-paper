@@ -31,6 +31,8 @@ class TurnProgress(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
     context: dict | None = None
     output: dict | None = None
+    work_contexts: list[dict] = Field(default_factory=list)
+    work_outputs: list[dict] = Field(default_factory=list)
 
 
 class RunState(BaseModel):

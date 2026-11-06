@@ -191,13 +191,7 @@ class GroqClient:
     def generate_json(self, messages, schema):
         """Parse structured output and allow one schema-only repair attempt."""
         rate_waited = [0]
-        request = list(messages) + [
-            {
-                "role": "system",
-                "content": "Return only JSON matching this schema: "
-                + json.dumps(schema.model_json_schema(), ensure_ascii=False),
-            }
-        ]
+        request = self.schema_request(messages, schema)
         for attempt in range(2):
             content = self._request(request, rate_waited)
             try:
@@ -214,3 +208,24 @@ class GroqClient:
                     }
                 )
         raise LLMFailure("invalid_model_output")
+
+    @staticmethod
+    def schema_request(messages, schema):
+        """The planner and sender must count the same schema and chat framing."""
+        return list(messages) + [
+            {
+                "role": "system",
+                "content": "Return only JSON matching this schema: "
+                + json.dumps(schema.model_json_schema(), ensure_ascii=False),
+            }
+        ]
+
+    def fits_request(self, messages, schema) -> bool:
+        """Leave full output budget plus room for framing/schema-repair overhead."""
+        if self._quota is None:
+            return True
+        tokens = estimate_input_tokens(self.schema_request(messages, schema))
+        return (
+            tokens + self._max_completion_tokens + 256
+            <= self._quota.tokens_per_minute
+        )

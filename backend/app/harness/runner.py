@@ -17,6 +17,7 @@ from app.harness.memory import RunMemory
 from app.harness.output_gate import OutputGate
 from app.harness.state import RunState, TurnProgress
 from app.harness.tool_gateway import ToolCall, ToolGateway
+from app.harness.token_work import combine_outputs, partition_work
 from app.harness.turn_checkpoint import (
     reusable_context, save_progress, turn_budget_exhausted,
 )
@@ -76,16 +77,42 @@ class AgentRunner:
             ):
                 self._event(state, role, "worker_output_reused")
                 return deepcopy(progress.output)
+            if progress.context_role != role or progress.context != context:
+                progress.work_contexts = []
+                progress.work_outputs = []
             progress.context = deepcopy(context)
             progress.context_role = role
             progress.output = None
-        self._event(state, role, "agent_started", model=self._model_id(role))
-        state.call_counts[role] = state.call_counts.get(role, 0) + 1
-        save_progress(self.memory, state)
-        output = self._graph(role).invoke({"context": context})["output"]
-        self._event(state, role, "agent_finished", "Structured output received")
-        if self._selects_evidence(role):
-            self._resolve_evidence(state, role, output, context["chunks"])
+        client = self._client(role)
+        tasks = progress.work_contexts if progress else []
+        outputs = progress.work_outputs if progress else []
+        if not tasks:
+            tasks = (
+                partition_work(role, context, lambda value: client.fits_request(
+                    *AgentFactory.request(role, client, value)
+                )) if hasattr(client, "fits_request") else [context]
+            )
+            if progress is not None:
+                progress.work_contexts = deepcopy(tasks)
+            self._event(state, role, "token_work_planned", total=len(tasks))
+        for index in range(len(outputs), len(tasks)):
+            self._event(
+                state, role, "token_work_started", completed=index, total=len(tasks),
+            )
+            self._event(state, role, "agent_started", model=self._model_id(role))
+            state.call_counts[role] = state.call_counts.get(role, 0) + 1
+            save_progress(self.memory, state)
+            output = self._graph(role).invoke({"context": tasks[index]})["output"]
+            self._event(state, role, "agent_finished", "Structured output received")
+            if self._selects_evidence(role):
+                self._resolve_evidence(state, role, output, tasks[index]["chunks"])
+            outputs.append(deepcopy(output))
+            save_progress(self.memory, state)
+            self._event(
+                state, role, "token_work_completed",
+                completed=len(outputs), total=len(tasks),
+            )
+        output = combine_outputs(role, context, tasks, outputs)
         if progress is not None:
             progress.output = deepcopy(output)
             save_progress(self.memory, state)
@@ -305,6 +332,8 @@ class AgentRunner:
         if state.turn_progress is not None:
             state.turn_progress.context = None
             state.turn_progress.output = None
+            state.turn_progress.work_contexts = []
+            state.turn_progress.work_outputs = []
         result = gateway.execute(
             ToolCall(
                 agent=role, name="read_chunks", arguments={"chunk_ids": source_ids},

@@ -121,3 +121,43 @@ processed references and checked chunks for the current omission-topic group.
 The interface shows whether data is live or checkpoint-based and reports polling
 freshness/connection failures. Countdown means the next retry time, never an ETA
 for the complete review. Navigation stays available throughout.
+
+## Work sized by request tokens
+
+Source pages/paragraphs remain immutable coverage and location records. Before a
+Groq worker call, the runtime planner checks the exact role prompt, context and
+JSON schema with the same UTF-8 token estimator used by the adapter. It reserves
+the configured full completion budget plus 256 tokens for framing/schema-repair
+headroom against the configured per-model token window. Estimates are heuristic;
+provider 429 handling remains necessary.
+
+Long producer inputs are partitioned and greedily packed using original span IDs.
+No chunk is replaced or renumbered; the evidence resolver still derives exact
+quotes and absolute Unicode character offsets from the original chunk. Comparison
+work keeps both main and related sources, reusing an anchor when needed. Retrieval
+scope itself is unchanged by partitioning.
+
+Verification is packed by finding groups with all cited spans and nearby context,
+not all full source pages. When necessary, nearby context is reduced before any
+cited passage; cited evidence is never discarded to manufacture a fit.
+When a single finding has too many citations, its evidence is partitioned too,
+preserving both sides in every comparison assessment. The original finding keeps
+all of its evidence; inconsistent subset assessments produce uncertainty rather
+than a supported claim.
+Omission audits group topics against every assigned source span and overlap boundary spans
+when capacity permits. Presence in any window refutes absence. Missing/ambiguous
+assessments, or a budget too small to retain boundary context, produce uncertainty
+rather than a whole-document absence claim.
+
+`TurnProgress.work_contexts` and `work_outputs` retain completed subcalls. Quota
+resume starts at the unfinished subcall without a new Supervisor decision. Domain
+findings and page coverage are advanced only after the work is combined. These
+fields use the existing tick-boundary persistence guarantees described above.
+The inspector exposes completed/total subtask counts through metadata, with
+`token_work_planned`, `token_work_started` and `token_work_completed` trace events.
+
+An indivisible claim or fixed rubric/prompt/schema that cannot fit even with the
+minimum source unit fails with `token_work_item_too_large`. It is not treated as a
+temporary quota shortage and is not retried indefinitely. Large metadata is not
+silently truncated. In-flight cached work assumes unchanged prompt/model/budget
+configuration; changing those during a paused run may require a new revision.

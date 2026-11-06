@@ -29,6 +29,7 @@ export interface RunActivity {
   phase: string; resume_action: string | null; agent: string | null;
   source: "live" | "checkpoint"; updated_at: string | null; retry_at: string | null;
   work: {
+    token_tasks?: { done: number; total: number };
     paper_read: { done: number; total: number };
     references: { done: number; total: number };
     findings: { total: number; pending_verification: number; pending_repairs: number; repair_attempts: number };

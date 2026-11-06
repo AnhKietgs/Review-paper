@@ -43,6 +43,7 @@ export function RunProgress({ run, waiting, lastPollAt, clock, disconnected }: {
       <span className="badge">{activity?.source === "live" ? "Trực tiếp từ worker" : "Checkpoint gần nhất"}</span>
     </div>
     {waiting && <p className="work-resume" data-testid="resume-work">Sau khi có quota, tiếp tục: <strong>{actionLabel(activity?.resume_action)}</strong>.</p>}
+    {!!work?.token_tasks?.total && <p className="work-audit" data-testid="token-work-progress"><strong>Phần việc theo token: {work.token_tasks.done} / {work.token_tasks.total} đã hoàn tất trong bước hiện tại.</strong><span>Các phần đã xong được giữ tại checkpoint khi chờ quota.</span></p>}
     <div className="work-coverage">
       <div className="spread"><strong>Phạm vi đọc paper chính</strong><span data-testid="paper-coverage">{coverage.done} / {coverage.total} đoạn</span></div>
       {coverage.total > 0 && <progress aria-label="Phạm vi đọc paper chính" value={coverage.done} max={coverage.total}/>}

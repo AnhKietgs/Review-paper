@@ -21,7 +21,11 @@ const initial: Run = {
 };
 
 test("work phases track polling without treating complete reading as a complete review", async ({ page }) => {
-  let run = { ...initial };
+  let run = { ...initial, activity: {
+    ...activity("analyze"), work: {
+      ...activity("analyze").work, token_tasks: { done: 2, total: 5 },
+    },
+  } } as Run;
   await page.route("**/api/v1/runs/work-run/events?after=*", route => route.fulfill({ json: { items: [] } }));
   await page.route("**/api/v1/runs/work-run", route => route.fulfill({ json: run }));
   await page.goto("/runs/work-run");
@@ -29,6 +33,7 @@ test("work phases track polling without treating complete reading as a complete 
   await expect(page.getByTestId("paper-coverage")).toHaveText("9 / 9 đoạn");
   await expect(page.getByText("Đã đọc hết paper chính.", { exact: false })).toBeVisible();
   await expect(page.getByTestId("run-status")).toHaveText("running");
+  await expect(page.getByTestId("token-work-progress")).toContainText("2 / 5");
   run = { ...initial, activity: activity("repair") };
   await expect(page.getByTestId("work-phase")).toHaveText("Đang sửa nhận xét");
   run = { ...initial, activity: activity("audit_omission") };
