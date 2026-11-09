@@ -22,6 +22,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     groq_requests_per_minute: int = 30
     review_token_budget: int = 50000
     review_findings_per_criterion: int = 2
+    groq_scientific_extraction_model: str = "openai/gpt-oss-20b"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -38,6 +39,9 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             ),
             groq_scientific_review_model=os.getenv(
                 "GROQ_SCIENTIFIC_REVIEW_MODEL", "openai/gpt-oss-120b"
+            ),
+            groq_scientific_extraction_model=os.getenv(
+                "GROQ_SCIENTIFIC_EXTRACTION_MODEL", "openai/gpt-oss-20b",
             ),
             groq_related_work_model=os.getenv(
                 "GROQ_RELATED_WORK_MODEL", "openai/gpt-oss-20b"

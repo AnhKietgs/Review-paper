@@ -34,6 +34,7 @@ class GroqClient:
         is_cancelled=None,
         on_provider_event=None,
         budget=None,
+        reasoning_effort=None,
     ):
         self.model = model
         self._completion = (
@@ -51,6 +52,7 @@ class GroqClient:
         self._quota = quota
         self._events = {
             "quota": on_quota, "provider": on_provider_event, "budget": budget,
+            "reasoning_effort": reasoning_effort,
         }
         self._is_cancelled = is_cancelled
         self.usage = {"calls": 0, "tokens": 0}
@@ -169,6 +171,8 @@ class GroqClient:
                     response_format={"type": "json_object"},
                     temperature=0,
                     max_completion_tokens=output_tokens,
+                    **({"reasoning_effort": self._events["reasoning_effort"]}
+                       if self._events["reasoning_effort"] else {}),
                 )
                 tokens = getattr(response.usage, "total_tokens", 0) or 0
                 self.usage["tokens"] += tokens
@@ -249,7 +253,10 @@ class GroqClient:
             {
                 "role": "system",
                 "content": "Return only JSON matching this schema: "
-                + json.dumps(schema.model_json_schema(), ensure_ascii=False),
+                + json.dumps(
+                    schema.model_json_schema(), ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             }
         ]
 

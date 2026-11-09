@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.v1.schemas.runs import RunAccepted, RunRequest
+from app.api.v1.schemas.runs import ResumeRunRequest, RunAccepted, RunRequest
 from app.infrastructure.persistence.unit_of_work import UnitOfWork, get_uow
 from app.services.run_service import RunService
 
@@ -32,9 +32,12 @@ def get_events(
 
 
 @router.post("/runs/{run_id}/resume", status_code=202, response_model=RunAccepted)
-def resume_run(run_id: str, unit: UnitOfWork = Depends(get_uow)):
-    """Resume an interrupted or formerly rate limited checkpoint."""
-    return RunService(unit.session).resume(run_id)
+def resume_run(
+    run_id: str, data: ResumeRunRequest = ResumeRunRequest(),
+    unit: UnitOfWork = Depends(get_uow),
+):
+    """Explicitly resume saved work with an optional stopped-budget extension."""
+    return RunService(unit.session).resume(run_id, data.token_budget)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunAccepted)

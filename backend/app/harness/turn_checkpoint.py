@@ -58,5 +58,6 @@ def turn_budget_exhausted(state: RunState) -> bool:
         return True
     return (
         state.batch_count >= state.max_batches and bool(state.remaining_chunk_ids)
-        and not state.current_batch_ids and not state.pending_findings
+        and not state.current_batch_ids
+        and (state.efficient_review or not state.pending_findings)
     )

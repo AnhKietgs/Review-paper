@@ -486,6 +486,21 @@ def test_completion_budget_is_passed_to_provider():
     assert requests[0]["max_completion_tokens"] == 3072
 
 
+def test_short_extraction_can_explicitly_use_low_reasoning():
+    requests = []
+
+    def completion(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content='{"action":"finish","reason":"Done"}',
+        ))], usage=SimpleNamespace(total_tokens=20))
+
+    client = GroqClient("fake", "openai/gpt-oss-20b", completion=completion,
+                        reasoning_effort="low")
+    client.generate_json([], AgentAction)
+    assert requests[0]["reasoning_effort"] == "low"
+
+
 def test_provider_json_validation_failure_gets_one_retry():
     requests = []
 

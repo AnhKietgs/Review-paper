@@ -79,6 +79,43 @@ def test_no_reference_skips_comparator_and_calls_one_worker_per_turn():
     assert all(item["status"] == "supported" for item in state.findings)
 
 
+def test_efficient_review_gathers_sources_then_verifies_once_with_same_results():
+    baseline, _ = execute(run_state(
+        {"ref": 1}, chunks=["main-1", "main-2", "main-3"], llm_mode="groq",
+    ))
+    compact, events = execute(run_state(
+        {"ref": 1}, chunks=["main-1", "main-2", "main-3"], llm_mode="groq",
+        efficient_review=True,
+    ))
+    assert compact.status == "completed"
+    assert compact.call_counts["supervisor"] == 1
+    assert compact.call_counts["evidence_verifier"] == 1
+    assert baseline.call_counts["evidence_verifier"] > 1
+    started = [e for e in events.items if e["action"] == "agent_started"]
+    verify_index = next(i for i, e in enumerate(started)
+                        if e["agent"] == "evidence_verifier")
+    assert all(e["agent"] not in {"scientific_review", "related_work"}
+               for e in started[verify_index:])
+    def signature(value):
+        return sorted((f["claim"], f["kind"], f["status"], sorted(
+            (source["paper_id"], source["chunk_id"], source["quote"])
+            for source in f["evidence"]
+        )) for f in value.findings)
+    assert signature(compact) == signature(baseline)
+    assert any(e["action"] == "decision_shortcut" for e in events.items)
+
+
+def test_efficient_review_still_respects_document_batch_limit():
+    result, _ = execute(run_state(
+        chunks=["main-1", "main-2", "main-3"], llm_mode="groq",
+        efficient_review=True, max_batches=1,
+    ))
+    assert result.status == "incomplete"
+    assert result.batch_count == 1
+    assert len(result.processed_chunk_ids) == 1
+    assert result.pending_findings
+
+
 def test_selected_reference_has_two_sided_evidence():
     state, _ = execute(run_state({"ref": 1}))
     assert state.status == "completed"

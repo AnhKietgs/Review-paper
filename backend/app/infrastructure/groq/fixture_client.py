@@ -8,6 +8,7 @@ from app.agents.schemas import (
     ComparisonOutput,
     ScientificOutput,
     VerificationOutput,
+    ExtractionOutput, SelectedScientificOutput,
 )
 
 
@@ -43,6 +44,20 @@ class FixtureClient:
                 reason="Fixture scheduling rule",
                 reference_paper_id=refs[0] if refs and action == "compare" else None,
             )
+        if schema is ExtractionOutput:
+            return schema(notes=[{
+                "criterion_code": context["criteria"][0]["code"],
+                "text": c["spans"][0]["text"][:120],
+                "evidence": [{"chunk_id": c["id"], "span_id": c["spans"][0]["id"]}],
+            } for c in context["chunks"][:6] if c["spans"]])
+        if schema is SelectedScientificOutput:
+            note = context["notes"][0]
+            return schema(analysis={"objective": "Fixture: tổng hợp ghi chú nguồn."},
+                          findings=[{
+                              "criterion_code": note["criterion_code"],
+                              "kind": "analysis", "claim": note["text"],
+                              "evidence": note["evidence"],
+                          }])
         if schema is ScientificOutput:
             chunks = context["chunks"]
             findings = []

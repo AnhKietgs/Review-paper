@@ -203,3 +203,69 @@ All assigned document text is still read. Reviewer-entered verify-only findings
 are retained. Verifier uses the same ID/status/reason contract with short reasons,
 at most4 topics/findings per work item and a2,048-token output allowance. Exact
 evidence, omission coverage and conservative uncertain judgments remain intact.
+
+## Compact review policy
+
+New Groq runs enable `efficient_review`: read the assigned main document, compare
+selected references, verify consolidated findings, then perform bounded repairs
+and omission audits. Existing pending/finished findings share the same criterion
+limit. One initial Supervisor model decision is retained; subsequent sole legal
+actions use `decision_shortcut` without an HTTP call. Ambiguous reference choices
+still use the model. This is a controller optimization, not invented model calls.
+Fixture defaults retain the prior schedule; explicit optimized-policy tests compare
+the resulting claims/statuses/source unions against that baseline.
+
+Existing Groq runs adopt this policy only at a clean worker turn boundary.
+Admitted actions, contexts and successful split outputs finish under their saved
+policy first. Batch/turn/token limits, cancellation, missing source handling and
+the output gate remain enforced; no budget is raised or reset.
+
+For selection-capable clients, Verifier transport projects canonical inputs to
+claims, evidence chunk/span links, source identities and source text presented
+once. Legacy references without span IDs retain exact quotes. Omission mode and
+all assigned span text are preserved. Permissions, locator and character-offset
+checks remain in the harness; model transport never mutates canonical data.
+Planner and sender share this projection and compact JSON/schema serialization.
+The inspector explains deferred verification with an economy-policy hint.
+
+On the synthetic four-claim benchmark, estimated complete request input fell
+from5,168 to1,999 tokens (61.3%). This is a reproducible offline transport estimate,
+not a measured Groq billing reduction or a guarantee a paper fits50,000 tokens.
+
+## Two-phase Scientific Review
+
+New full Groq runs snapshot `two_phase_review=true`. Reading (`analyze` action,
+`extract` activity) uses `GROQ_SCIENTIFIC_EXTRACTION_MODEL`, default20B,1536output
+tokens and low reasoning for supported GPT-OSS models. It returns up to6 factual
+notes, each at most160characters and2source selections. The harness resolves
+quotes/versions/locators/absolute character positions from original spans, rejects
+unknown criteria/bad sources and checkpoints successful reading subcalls. Notes
+are unverified inputs, never scientific findings or proof of document-wide absence.
+
+Once all main text is read, `synthesize` invokes the same logical Scientific Review
+agent on120B with2048output tokens. Token packing groups notes with original cited
+source spans and neighboring context; model-facing notes use source links rather
+than duplicate quotes. All notes are assigned work, and indivisible over-budget
+items fail safely. Normal resolver, criterion cap, provenance gate and Evidence
+Verifier still apply to generated findings. Source IDs and original offsets are
+unchanged. Partial successful synthesis outputs are reused after quota waits.
+
+Internal extraction/synthesis client adapters share the existing model quota and
+run token ledger with all other roles; they are not additional logical agents.
+Trace records phase/model under scientific_review and the UI shows extraction,
+note count and synthesis separately. Legacy and verification-only runs keep their
+saved workflow; they are never silently reread to create missing notes.
+
+New mode limits repairs to2attempts, skips optional question repair, and admits
+at most2specific omission topics. Omission audits still scan original main-paper
+text with full coverage and conservative uncertainty. No absence conclusion comes
+from notes alone. If no valid notes exist, scientific synthesis stops incomplete
+with scientific_notes_unavailable rather than completing an empty review.
+Reports disclose selected-note/source scope and bounded repair/omission policy.
+
+The synthetic9-chunk benchmark reserves59,625tokens for old per-chunk scientific
+analysis versus35,604reading+10,999synthesis=46,603 (21.8%lower). Strong-model tasks
+fall9→2; input estimates include prompts/schema. This excludes other roles and is
+not billed usage, a scientific quality evaluation or a70k completion guarantee.
+GPT-OSS reasoning settings are documented by
+[Groq](https://console.groq.com/docs/reasoning).

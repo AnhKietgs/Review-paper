@@ -62,7 +62,7 @@ class AgentAction(StrictModel):
 
     action: Literal[
         "analyze", "compare", "verify", "repair", "next_batch",
-        "audit_omission", "finish",
+        "audit_omission", "finish", "synthesize",
     ]
     reason: str
     reference_paper_id: str | None = None
@@ -88,6 +88,20 @@ class SelectedScientificOutput(StrictModel):
 
     analysis: dict[str, str]
     findings: list[SelectedFinding]
+
+
+class ExtractedNote(StrictModel):
+    """Short unverified fact candidate with source selections only."""
+
+    criterion_code: str
+    text: str = Field(min_length=1, max_length=160)
+    evidence: list[EvidenceSelection] = Field(min_length=1, max_length=2)
+
+
+class ExtractionOutput(StrictModel):
+    """Bounded notes, not a full review per source batch."""
+
+    notes: list[ExtractedNote] = Field(max_length=6)
 
 
 class SelectedComparisonOutput(StrictModel):

@@ -5,6 +5,8 @@ const phases: Record<string, [string, string]> = {
   preparing: ["Đang chuẩn bị bước tiếp theo", "Tiến độ gần nhất đã được lưu; đang chờ worker cập nhật công việc tiếp theo."],
   next_batch: ["Đang lấy đoạn tài liệu tiếp theo", "Chuẩn bị nội dung để phân tích."],
   analyze: ["Đang phân tích paper", "Phân tích mục tiêu, phương pháp, đóng góp và kết quả từ tài liệu."],
+  extract: ["Đang đọc và trích xuất thông tin", "Lưu ghi chú ngắn gắn với đoạn nguồn; chưa tạo nhận xét phản biện ở bước này."],
+  synthesize: ["Đang tổng hợp phản biện khoa học", "Đánh giá ghi chú cùng nguyên văn nguồn để tạo nhận xét theo rubric; sau đó kiểm chứng từng nhận xét."],
   compare: ["Đang so sánh công trình liên quan", "Đối chiếu paper chính với các công trình bạn đã chọn."],
   verify: ["Đang kiểm chứng nhận xét", "Đánh giá mức độ hỗ trợ của bằng chứng cho các nhận xét đang chờ."],
   repair: ["Đang sửa nhận xét", "Thu hẹp hoặc điều chỉnh nhận xét để khớp bằng chứng nguồn."],
@@ -22,6 +24,7 @@ const phases: Record<string, [string, string]> = {
 
 export function runErrorMessage(code: string): string {
   const messages: Record<string, string> = {
+    scientific_notes_unavailable: "Không trích xuất được ghi chú có nguồn hợp lệ để tổng hợp. Lượt chạy đã dừng và giữ tiến độ; hệ thống không tự suy diễn nhận xét.",
     review_token_budget_exhausted: "Không đủ ngân sách token cho yêu cầu tiếp theo. Hệ thống đã dừng và giữ kết quả cùng checkpoint; bản review chưa hoàn chỉnh. Không tự tiếp tục hoặc đặt lại ngân sách.",
     token_work_item_too_large: "Một mục đầu vào hoặc phần hướng dẫn vẫn quá lớn để chia tiếp an toàn. Hệ thống đã dừng, không bỏ bớt nguồn hay tự chờ quota. Hãy rút gọn rubric hoặc xem trace để xác định mục quá dài.",
     provider_unavailable: "Chưa hoàn tất được yêu cầu tới Groq. Tiến độ đã lưu; bạn có thể tiếp tục từ checkpoint để thử lại phần còn dang dở.",
@@ -58,7 +61,9 @@ export function RunProgress({ run, waiting, lastPollAt, clock, disconnected }: {
       </div>
       <span className="badge">{activity?.source === "live" ? "Trực tiếp từ worker" : "Checkpoint gần nhất"}</span>
     </div>
-    {waiting && <p className="work-resume" data-testid="resume-work">Sau khi có quota, tiếp tục: <strong>{actionLabel(activity?.resume_action)}</strong>.</p>}
+    {waiting && <p className="work-resume" data-testid="resume-work">Sau khi có quota, tiếp tục: <strong>{actionLabel(activity?.scientific_phase ?? activity?.resume_action)}</strong>.</p>}
+    {run.efficient_review && <p className="work-audit" data-testid="review-strategy">{run.two_phase_review ? "Chế độ hai bước: đọc và lưu ghi chú nguồn trước; sau đó tổng hợp phản biện, đối chiếu và kiểm chứng." : "Chế độ tiết kiệm: gom nhận xét trong lúc đọc; kiểm chứng sau khi đọc và đối chiếu xong. Bằng chứng và vị trí nguồn vẫn được kiểm tra."}</p>}
+    {run.two_phase_review && work?.scientific && <p className="work-audit" data-testid="scientific-notes-progress">Đã lưu {work.scientific.note_count} ghi chú nguồn · Tổng hợp: {work.scientific.synthesized ? "đã xong" : "chưa xong"}. Ghi chú là đầu vào, trạng thái bằng chứng nằm ở nhận xét sau kiểm chứng.</p>}
     {!!work?.token_tasks?.total && <p className="work-audit" data-testid="token-work-progress"><strong>Phần việc theo token: {work.token_tasks.done} / {work.token_tasks.total} đã hoàn tất trong bước hiện tại.</strong><span>Các phần đã xong được giữ tại checkpoint khi chờ quota.</span></p>}
     {run.token_budget && <div className="work-coverage" data-testid="review-token-budget">
       <div className="spread"><strong>Ngân sách token của review</strong><span>{run.token_budget.spent.toLocaleString("vi-VN")} / {run.token_budget.limit.toLocaleString("vi-VN")} token</span></div>

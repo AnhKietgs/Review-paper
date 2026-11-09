@@ -84,6 +84,10 @@ class RunService:
             scope=scope,
             remaining_chunk_ids=chunk_ids,
             llm_mode=settings.demo_llm_mode,
+            efficient_review=settings.demo_llm_mode == "groq",
+            two_phase_review=settings.demo_llm_mode == "groq" and mode == "review",
+            max_repairs=2 if settings.demo_llm_mode == "groq" else 8,
+            max_omission_topics=2 if settings.demo_llm_mode == "groq" else None,
             token_budget=settings.review_token_budget,
             max_findings_per_criterion=settings.review_findings_per_criterion,
         )
@@ -140,6 +144,8 @@ class RunService:
             "id": row.id,
             "review_id": row.review_id,
             "status": row.status,
+            "efficient_review": state.efficient_review,
+            "two_phase_review": state.two_phase_review,
             "step_count": row.step_count,
             "usage": row.usage,
             "token_budget": {
@@ -165,13 +171,47 @@ class RunService:
             raise NotFoundError("run_missing", "Run not found")
         return {"items": self.repository.events(run_id, after)}
 
-    def resume(self, run_id: str) -> RunAccepted:
+    def _extend_budget(self, row, state, limit: int) -> None:
+        """Only explicitly extend a budget-stopped run, never reset consumption."""
+        spent = max(state.token_spent, row.usage.get("tokens", 0))
+        if not (
+            row.status == "incomplete"
+            and row.error_code == "review_token_budget_exhausted"
+            and limit == 90000 and limit > max(state.token_budget, spent)
+        ):
+            raise ConflictError(
+                "budget_not_extendable",
+                "Chỉ nâng lên 90.000 khi lượt dừng do thiếu ngân sách "
+                "và giới hạn mới lớn hơn giới hạn cũ cùng số token đã tính.",
+            )
+        ReviewService(self.session).get(row.review_id)
+        previous = state.token_budget
+        state.token_budget, state.token_spent = limit, spent
+        RunEventRecorder(self.session).append(row.id, RunEventInput(
+            agent="harness", action="review_budget_extended",
+            output_summary="Explicitly raised total allowance; recorded usage retained",
+            payload={"previous_limit": previous, "new_limit": limit, "spent": spent},
+        ))
+
+    def resume(self, run_id: str, token_budget: int | None = None) -> RunAccepted:
         """Explicitly requeue an interrupted run without erasing its checkpoint."""
         self.session.execute(text("BEGIN IMMEDIATE"))
         row = self.repository.get(run_id)
         if row is None:
             raise NotFoundError("run_missing", "Run not found")
-        if row.status != "interrupted" and not (
+        sibling = self.session.scalar(select(RunRow.id).where(
+            RunRow.requested_review_id == row.requested_review_id,
+            RunRow.id != row.id,
+            RunRow.status.in_(["queued", "running", "interrupted"]),
+        ))
+        if sibling:
+            raise ConflictError(
+                "run_active", "Đã có lượt khác đang xử lý cho bản review này.",
+            )
+        state = RunMemory(self.session).load(run_id)
+        if token_budget is not None:
+            self._extend_budget(row, state, token_budget)
+        if token_budget is None and row.status != "interrupted" and not (
             row.status == "failed" and row.error_code in {
                 "rate_limited", "quota_request_too_large", "provider_unavailable",
                 "provider_timeout", "provider_connection_error",
@@ -181,7 +221,6 @@ class RunService:
         row.status = "queued"
         row.error_code = None
         row.finished_at = None
-        state = RunMemory(self.session).load(run_id)
         state.status = "running"
         state.error_code = None
         state.cooldown_until = None

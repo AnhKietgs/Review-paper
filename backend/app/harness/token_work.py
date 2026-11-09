@@ -188,9 +188,37 @@ def _omission_tasks(context, fits):
     ]
 
 
+def _synthesis_tasks(context, fits):
+    """Pack notes with their original passages, never summary-only judgments."""
+    def task(notes):
+        proxies = [{**note, "claim": note["text"]} for note in notes]
+        result = _cited_context(context, proxies)
+        codes = {note["criterion_code"] for note in notes}
+        return {**result, "notes": notes, "pending_findings": [], "criteria": [
+            item for item in context["criteria"] if item["code"] in codes
+        ]}
+
+    tasks, current = [], []
+    for note in context["notes"]:
+        candidate = task(current + [note])
+        if fits(candidate):
+            current.append(note)
+            continue
+        if current:
+            tasks.append(task(current))
+        current = [note]
+        if not fits(task(current)):
+            raise LLMFailure("token_work_item_too_large")
+    if current:
+        tasks.append(task(current))
+    return tasks
+
+
 def partition_work(role: str, context: dict, fits) -> list[dict]:
     """Pack complete requests; never renumber source IDs or discard assigned text."""
     context = {**context, "reference_assessments": {}}
+    if role == "scientific_review" and context.get("scientific_phase") == "synthesize":
+        return _synthesis_tasks(context, fits)
     if role == "evidence_verifier":
         if context.get("omission_audit"):
             return _omission_tasks(context, fits)
@@ -261,6 +289,8 @@ def combine_outputs(role: str, context: dict, tasks: list, outputs: list) -> dic
     """Publish only after all work finishes; absence needs every source window."""
     if role == "evidence_verifier":
         return _combine_assessments(context, tasks, outputs)
+    if context.get("scientific_phase") == "extract":
+        return {"notes": [note for output in outputs for note in output["notes"]]}
     findings = [finding for output in outputs for finding in output["findings"]]
     if role == "related_work":
         return {

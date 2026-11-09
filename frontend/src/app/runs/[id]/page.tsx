@@ -10,7 +10,7 @@ import { RunProgress, runErrorMessage } from "@/components/run-progress";
 export default function RunInspector() {
   const {id}=useParams<{id:string}>(); const [run,setRun]=useState<Run|null>(null),[events,setEvents]=useState<RunEvent[]>([]);
   const [error,setError]=useState(""),[filter,setFilter]=useState("all"),[resume,setResume]=useState(0);
-  const [controlBusy,setControlBusy]=useState<"cancel"|"resume"|null>(null);
+  const [controlBusy,setControlBusy]=useState<"cancel"|"resume"|"extend"|null>(null);
   const [lastPollAt,setLastPollAt]=useState<number|null>(null),[clock,setClock]=useState(Date.now());
   const active=!!run&&["queued","running"].includes(run.status);
   useEffect(()=>{if(!active)return;const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[active]);
@@ -26,9 +26,9 @@ export default function RunInspector() {
   const waiting=run?.status==="running"&&(run.activity?run.activity.phase==="waiting_quota":!!run.cooldown_until);
   const remainingSeconds=retryAt?Math.max(0,Math.ceil((new Date(retryAt).getTime()-clock)/1000)):0;
   const countdown=`${String(Math.floor(remainingSeconds/60)).padStart(2,"0")}:${String(remainingSeconds%60).padStart(2,"0")}`;
-  async function control(action:"cancel"|"resume") {
+  async function control(action:"cancel"|"resume"|"extend") {
     setControlBusy(action);setError("");
-    try {await api(`/runs/${id}/${action}`,{method:"POST"});setResume(value=>value+1);}
+    try {await api(`/runs/${id}/${action==="extend"?"resume":action}`,{method:"POST",...(action==="extend"?{body:JSON.stringify({token_budget:90000})}:{})});setResume(value=>value+1);}
     catch(cause) {setError(errorMessage(cause));}
     finally {setControlBusy(null);}
   }
@@ -38,6 +38,7 @@ export default function RunInspector() {
       <div className="actions">
         {["queued","running"].includes(run.status) ? <span className="run-review-locked">Bản review sẽ mở khi xử lý xong</span> : <Link href={`/reviews/${run.review_id}`}>Mở bản review →</Link>}
         {(run.status==="interrupted"||(run.status==="failed"&&["rate_limited","quota_request_too_large","provider_unavailable","provider_timeout","provider_connection_error"].includes(run.error_code??"")))&&<button disabled={!!controlBusy} onClick={()=>control("resume")}>{controlBusy==="resume"?"Đang tiếp tục…":"Tiếp tục từ checkpoint"}</button>}
+        {run.status==="incomplete"&&run.error_code==="review_token_budget_exhausted"&&run.token_budget&&run.token_budget.limit<90000&&run.token_budget.spent<90000&&<button disabled={!!controlBusy} title="Tăng tổng giới hạn lên 90.000, giữ nguyên token đã tính và tiếp tục checkpoint; không tăng quota Groq." onClick={()=>control("extend")}>{controlBusy==="extend"?"Đang nâng ngân sách…":"Nâng lên 90.000 token và tiếp tục"}</button>}
         {["queued","running","interrupted","failed"].includes(run.status)&&<button className="danger-button" disabled={!!controlBusy} onClick={()=>control("cancel")}>{controlBusy==="cancel"?"Đang dừng…":"Dừng review"}</button>}
       </div>
     </div>

@@ -111,19 +111,33 @@ class RunWorker:
 
         models = {
             "supervisor": (settings.groq_supervisor_model, 256),
+            "scientific_extract": (settings.groq_scientific_extraction_model, 1536),
+            "scientific_synthesis": (settings.groq_scientific_review_model, 2048),
             "scientific_review": (settings.groq_scientific_review_model, 3072),
             "related_work": (settings.groq_related_work_model, 2048),
-            "evidence_verifier": (settings.groq_evidence_verifier_model, 2048),
+            # A batch holds at most four findings, each with a short verdict
+            # reason. 1024 tokens leaves room for the complete JSON response
+            # while avoiding the previous 2048-token reservation per batch.
+            "evidence_verifier": (settings.groq_evidence_verifier_model, 1024),
         }
+
+        def logical_role(role):
+            return "scientific_review" if role in {
+                "scientific_extract", "scientific_synthesis",
+            } else role
+
         return GroqRouter({
             role: GroqClient(
                 settings.groq_api_key, model,
                 rate_limit_wait_seconds=settings.groq_rate_limit_wait_seconds,
-                max_completion_tokens=output_limit, on_retry=retry_event(role),
-                quota=self.quota, on_quota=quota_event(role),
+                max_completion_tokens=output_limit,
+                on_retry=retry_event(logical_role(role)),
+                quota=self.quota, on_quota=quota_event(logical_role(role)),
                 is_cancelled=lambda: self._is_cancelled(run_id),
-                on_provider_event=provider_event(role),
+                on_provider_event=provider_event(logical_role(role)),
                 budget=budget,
+                reasoning_effort="low" if role == "scientific_extract"
+                and model.startswith("openai/gpt-oss-") else None,
             )
             for role, (model, output_limit) in models.items()
         })
@@ -288,6 +302,12 @@ class RunWorker:
                 run.finished_at = datetime.now(timezone.utc)
             review = unit.session.get(ReviewRow, state.review_id)
             review.analysis = {
+                "workflow": {
+                    "two_phase_review": state.two_phase_review,
+                    "note_count": len(state.read_notes),
+                    "max_repairs": state.max_repairs,
+                    "max_omission_topics": state.max_omission_topics,
+                },
                 "sections": state.analysis,
                 "references": state.reference_assessments,
                 "coverage": {
@@ -360,6 +380,8 @@ class RunWorker:
             with UnitOfWork() as unit:
                 state = RunMemory(unit.session).load(run_id)
                 state.cooldown_until = None
+                if state.llm_mode == "groq" and state.turn_progress is None:
+                    state.efficient_review = True
                 original_steps = state.turn_count
                 recorded_usage = unit.session.get(RunRow, run_id).usage.get("tokens", 0)
                 state.token_spent = max(state.token_spent, recorded_usage)

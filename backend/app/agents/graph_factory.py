@@ -8,8 +8,9 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents import evidence_verifier, related_work, scientific_review
 from app.agents.ports import LLMPort
+from app.agents.request_context import scientific_context, verifier_context
 from app.agents.schemas import (
-    AgentAction, SelectedComparisonOutput, SelectedScientificOutput,
+    AgentAction, ExtractionOutput, SelectedComparisonOutput, SelectedScientificOutput,
 )
 
 
@@ -44,13 +45,27 @@ class AgentFactory:
                 "scientific_review": SelectedScientificOutput,
                 "related_work": SelectedComparisonOutput,
             }.get(role, schema)
+        if role == "scientific_review":
+            if context.get("scientific_phase") == "extract":
+                schema, prompt_file = ExtractionOutput, "scientific_extract.md"
+            elif context.get("scientific_phase") == "synthesize":
+                schema = SelectedScientificOutput
+                prompt_file = "scientific_synthesis.md"
         prompt = (Path(__file__).parent / "prompts" / prompt_file).read_text(
             encoding="utf-8"
         )
+        if role == "evidence_verifier" and getattr(
+            llm, "evidence_selection_mode", False,
+        ):
+            context = verifier_context(context)
+        if role == "scientific_review" and context.get("scientific_phase"):
+            context = scientific_context(context)
 
         return [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+            {"role": "user", "content": json.dumps(
+                context, ensure_ascii=False, separators=(",", ":"),
+            )},
         ], schema
 
     @staticmethod

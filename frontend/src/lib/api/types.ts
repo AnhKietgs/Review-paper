@@ -26,9 +26,11 @@ export interface Review {
 }
 export interface AcceptedRun { run_id: string; review_id: string; status: string }
 export interface RunActivity {
+  scientific_phase?: "extract" | "synthesize" | null;
   phase: string; resume_action: string | null; agent: string | null;
   source: "live" | "checkpoint"; updated_at: string | null; retry_at: string | null;
   work: {
+    scientific?: { note_count: number; synthesized: boolean };
     token_tasks?: { done: number; total: number };
     paper_read: { done: number; total: number };
     references: { done: number; total: number };
@@ -37,6 +39,8 @@ export interface RunActivity {
   };
 }
 export interface Run {
+  two_phase_review?: boolean;
+  efficient_review?: boolean;
   id: string; review_id: string; status: string; step_count: number;
   batch_count: number; processed: number; remaining: number; max_batches: number;
   max_turns: number; error_code: string | null; cooldown_until: string | null;

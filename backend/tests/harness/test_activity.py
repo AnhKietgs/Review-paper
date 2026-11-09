@@ -47,6 +47,19 @@ def test_quota_state_keeps_resume_action_and_deadline():
     assert build_activity(saved, "cancelled")["phase"] == "cancelled"
 
 
+def test_two_phase_activity_distinguishes_reading_and_synthesis_without_notes_text():
+    saved = state()
+    saved.two_phase_review = True
+    saved.read_notes = [{"text": "private document note"}]
+    saved.turn_progress = TurnProgress(action=AgentAction(action="analyze", reason="Read"))
+    public = build_activity(saved, "running")
+    assert public["phase"] == "extract"
+    assert public["work"]["scientific"]["note_count"] == 1
+    assert "private document note" not in str(public)
+    saved.turn_progress.action = AgentAction(action="synthesize", reason="Review")
+    assert build_activity(saved, "running")["phase"] == "synthesize"
+
+
 def test_live_activity_is_safe_and_cannot_override_terminal_or_cooldown_state():
     saved = state()
     try:

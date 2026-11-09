@@ -68,3 +68,8 @@ class RunState(BaseModel):
     error_code: str | None = None
     cooldown_until: datetime | None = None
     llm_mode: str = "fixture"
+    efficient_review: bool = False
+    two_phase_review: bool = False
+    read_notes: list[dict] = Field(default_factory=list)
+    scientific_synthesized: bool = False
+    max_omission_topics: int | None = None

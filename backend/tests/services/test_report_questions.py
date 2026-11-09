@@ -4,6 +4,20 @@ from app.api.v1.schemas.reviews import ReviewRead
 from app.services.report_composer import ReportComposer
 
 
+def test_report_discloses_selected_note_scope_and_no_valid_note_case():
+    review = ReviewRead.model_validate({
+        "id": "review", "paper_id": "paper", "paper_content_version": 1,
+        "rubric_id": "rubric", "rubric_version": 1, "revision": 1,
+        "parent_revision_id": None, "status": "completed", "analysis": {
+            "workflow": {"two_phase_review": True, "note_count": 0,
+                         "max_repairs": 2, "max_omission_topics": 2},
+        }, "summary": "", "reviewer_edits": {}, "references": [], "findings": [],
+    })
+    report = ReportComposer().render_markdown(review)
+    assert "ghi chú và đoạn nguồn được chọn" in report
+    assert "chưa được đánh giá" in report
+
+
 def test_report_separates_grounded_questions_and_omits_ungrounded_ones():
     source = {
         "paper_id": "paper",

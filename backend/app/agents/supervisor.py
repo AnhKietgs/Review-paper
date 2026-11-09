@@ -6,17 +6,20 @@ from app.harness.state import RunState
 
 def eligible_actions(state: RunState) -> list[str]:
     """Return legal scheduling choices from current durable progress."""
-    if state.pending_findings:
-        return ["verify"]
-    if state.repair_queue:
-        return ["repair"]
-    if state.current_batch_ids:
-        return ["analyze"]
-    if state.remaining_chunk_ids:
-        return ["next_batch"]
-    if set(state.scope.reference_versions) - set(state.reference_assessments):
-        return ["compare"]
-    return ["audit_omission" if state.omission_audits else "finish"]
+    reading = [
+        (state.current_batch_ids, "analyze"),
+        (state.remaining_chunk_ids, "next_batch"),
+        (state.two_phase_review and not state.scientific_synthesized, "synthesize"),
+        (set(state.scope.reference_versions) - set(state.reference_assessments),
+         "compare"),
+    ]
+    priorities = (reading if state.efficient_review else []) + [
+        (state.pending_findings, "verify"), (state.repair_queue, "repair"),
+    ] + reading
+    return next(
+        ([action] for pending, action in priorities if pending),
+        ["audit_omission" if state.omission_audits else "finish"],
+    )
 
 
 class Supervisor:

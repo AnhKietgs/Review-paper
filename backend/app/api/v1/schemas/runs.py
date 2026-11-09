@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class RunRequest(BaseModel):
@@ -12,8 +12,15 @@ class RunRequest(BaseModel):
 
 
 class RunAccepted(BaseModel):
-    """Accepted background execution and its fresh draft revision."""
+    """Accepted background execution and its preserved review revision."""
 
     run_id: str
     review_id: str
     status: str
+
+
+class ResumeRunRequest(BaseModel):
+    """Optional explicit trial extension; absence preserves ordinary resume."""
+
+    model_config = ConfigDict(extra="forbid")
+    token_budget: Literal[90000] | None = None

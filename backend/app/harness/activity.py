@@ -11,6 +11,7 @@ ACTION_AGENTS = {
     "verify": "evidence_verifier", "repair": "scientific_review",
     "audit_omission": "evidence_verifier", "next_batch": "harness",
     "finish": "harness",
+    "synthesize": "scientific_review",
 }
 
 
@@ -18,6 +19,12 @@ def build_activity(state: RunState, status: str) -> dict:
     """Project counts only; paper coverage is not overall review completion."""
     action = state.turn_progress.action.action if state.turn_progress else None
     phase = action or "preparing"
+    scientific_phase = (
+        "extract" if state.two_phase_review and action == "analyze"
+        else "synthesize" if action == "synthesize" else None
+    )
+    if scientific_phase:
+        phase = scientific_phase
     if status != "running":
         phase = status
     elif state.cooldown_until is not None:
@@ -26,6 +33,7 @@ def build_activity(state: RunState, status: str) -> dict:
     cursor = audits[0]["checked"] if audits else 0
     return {
         "phase": phase, "resume_action": action,
+        "scientific_phase": scientific_phase,
         "agent": ACTION_AGENTS.get(action), "source": "checkpoint",
         "updated_at": None,
         "retry_at": (
@@ -33,6 +41,10 @@ def build_activity(state: RunState, status: str) -> dict:
             if phase == "waiting_quota" else None
         ),
         "work": {
+            "scientific": {
+                "note_count": len(state.read_notes),
+                "synthesized": state.scientific_synthesized,
+            },
             "token_tasks": {
                 "done": len(state.turn_progress.work_outputs)
                 if state.turn_progress else 0,

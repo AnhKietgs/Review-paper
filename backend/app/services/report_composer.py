@@ -17,6 +17,25 @@ class ReportComposer:
     """Generate a report without an extra LLM call at export time."""
 
     @staticmethod
+    def _workflow_lines(workflow):
+        if not workflow.get("two_phase_review"):
+            return []
+        lines = [
+            "Chế độ tổng hợp từ ghi chú và đoạn nguồn được chọn; "
+            "ghi chú không thay thế kiểm chứng nhận xét.", "",
+            f"Giới hạn lượt sửa: {workflow.get('max_repairs', 2)}; chủ đề rà "
+            "thiếu thông tin: "
+            f"{workflow.get('max_omission_topics') or 'không giới hạn'}.",
+            "",
+        ]
+        if not workflow.get("note_count"):
+            lines += [
+                "Không có ghi chú nguồn hợp lệ; phần phản biện khoa học "
+                "chưa được đánh giá.", "",
+            ]
+        return lines
+
+    @staticmethod
     def _finding_lines(finding) -> list[str]:
         lines = [f"### {finding.claim}", "", f"Trạng thái: `{finding.status}`.", ""]
         if finding.status != "supported":
@@ -175,4 +194,5 @@ class ReportComposer:
             "chưa được xác minh.",
             "",
         ]
+        lines += self._workflow_lines(review.analysis.get("workflow", {}))
         return "\n".join(lines)

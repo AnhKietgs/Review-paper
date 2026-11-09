@@ -14,6 +14,7 @@ from app.harness.events import RunEventInput, RunEventRecorder
 from app.harness.evidence import EvidenceResolutionError, EvidenceResolver
 from app.harness.finding_merge import finding_key, merge_evidence
 from app.harness.finding_limits import finding_counts
+from app.harness.scientific_notes import merge_notes, resolve_notes
 from app.harness.memory import RunMemory
 from app.harness.output_gate import OutputGate
 from app.harness.state import RunState, TurnProgress
@@ -50,23 +51,34 @@ class AgentRunner:
             ),
         )
 
-    def _client(self, role: str):
-        return self.llm.for_role(role) if hasattr(self.llm, "for_role") else self.llm
+    @staticmethod
+    def _route(role, context=None):
+        phase = (context or {}).get("scientific_phase")
+        if role == "scientific_review" and phase:
+            return (
+                "scientific_extract" if phase == "extract" else "scientific_synthesis"
+            )
+        return role
 
-    def _graph(self, role: str):
-        if role not in self.graphs:
-            self.graphs[role] = AgentFactory.build(role, self._client(role))
-        return self.graphs[role]
+    def _client(self, role: str, context=None):
+        route = self._route(role, context)
+        return self.llm.for_role(route) if hasattr(self.llm, "for_role") else self.llm
+
+    def _graph(self, role: str, context=None):
+        key = self._route(role, context)
+        if key not in self.graphs:
+            self.graphs[key] = AgentFactory.build(role, self._client(role, context))
+        return self.graphs[key]
 
     def _selects_evidence(self, role: str) -> bool:
         return role in {"scientific_review", "related_work"} and getattr(
             self._client(role), "evidence_selection_mode", False
         )
 
-    def _model_id(self, role: str) -> str:
+    def _model_id(self, role: str, context=None) -> str:
         """Expose only the selected model ID, never provider credentials."""
         if hasattr(self.llm, "model_for"):
-            return self.llm.model_for(role)
+            return self.llm.model_for(self._route(role, context))
         return "fixture" if self.llm.__class__.__name__ == "FixtureClient" else "custom"
 
     def _invoke(self, state: RunState, role: str, context: dict) -> dict:
@@ -84,7 +96,7 @@ class AgentRunner:
             progress.context = deepcopy(context)
             progress.context_role = role
             progress.output = None
-        client = self._client(role)
+        client = self._client(role, context)
         tasks = progress.work_contexts if progress else []
         outputs = progress.work_outputs if progress else []
         if not tasks:
@@ -100,12 +112,26 @@ class AgentRunner:
             self._event(
                 state, role, "token_work_started", completed=index, total=len(tasks),
             )
-            self._event(state, role, "agent_started", model=self._model_id(role))
+            self._event(
+                state, role, "agent_started", model=self._model_id(role, context),
+                scientific_phase=context.get("scientific_phase"),
+            )
             state.call_counts[role] = state.call_counts.get(role, 0) + 1
             save_progress(self.memory, state)
-            output = self._graph(role).invoke({"context": tasks[index]})["output"]
+            output = self._graph(role, context).invoke(
+                {"context": tasks[index]},
+            )["output"]
             self._event(state, role, "agent_finished", "Structured output received")
-            if self._selects_evidence(role):
+            if context.get("scientific_phase") == "extract":
+                output, rejected = resolve_notes(
+                    output, tasks[index]["chunks"], self.evidence_resolver, state.scope,
+                    {c["code"] for c in context["criteria"]},
+                )
+                self._event(state, role, "reading_notes_resolved",
+                            accepted=len(output["notes"]), rejected=rejected)
+            elif self._selects_evidence(role) or (
+                context.get("scientific_phase") == "synthesize"
+            ):
                 self._resolve_evidence(state, role, output, tasks[index]["chunks"])
             outputs.append(deepcopy(output))
             save_progress(self.memory, state)
@@ -147,6 +173,8 @@ class AgentRunner:
     def _queue_repair(
         self, state: RunState, finding: dict, role: str, source_ids: list[str]
     ) -> None:
+        if state.two_phase_review and finding["kind"] == "question":
+            return
         if finding["id"] in state.repair_attempted_ids:
             return
         if state.repair_count + len(state.repair_queue) >= state.max_repairs:
@@ -210,6 +238,16 @@ class AgentRunner:
                 )
                 continue
             if finding["kind"] == "omission":
+                topics = len(state.omission_audits) + sum(
+                    f["kind"] == "omission" for f in state.findings
+                )
+                if (
+                    state.max_omission_topics is not None
+                    and topics >= state.max_omission_topics
+                ):
+                    self._event(state, "harness", "omission_limit_reached",
+                                "Extra omission topic not scheduled")
+                    continue
                 state.omission_audits.append(
                     {"finding": finding, "checked": 0, "ambiguous": False}
                 )
@@ -369,7 +407,9 @@ class AgentRunner:
         )
         context = self.context_builder.build(
             state, result.data, rubric.data,
-            include_spans=self._selects_evidence(role),
+            include_spans=self._selects_evidence(role) or (
+                state.two_phase_review and role == "scientific_review"
+            ),
         )
         self._event(
             state,
@@ -389,12 +429,17 @@ class AgentRunner:
         context = self._context(
             state, gateway, "scientific_review", state.current_batch_ids
         )
+        if state.two_phase_review:
+            context["scientific_phase"] = "extract"
         output = self._invoke(state, "scientific_review", context)
-        for key, value in output["analysis"].items():
-            state.analysis.setdefault(key, []).append(value)
-        self._stage(
-            state, output["findings"], "scientific_review", state.current_batch_ids
-        )
+        if state.two_phase_review:
+            state.read_notes = merge_notes(state.read_notes, output["notes"])
+        else:
+            for key, value in output["analysis"].items():
+                state.analysis.setdefault(key, []).append(value)
+            self._stage(
+                state, output["findings"], "scientific_review", state.current_batch_ids
+            )
         state.processed_chunk_ids.extend(state.current_batch_ids)
         state.remaining_chunk_ids = [
             item
@@ -403,12 +448,34 @@ class AgentRunner:
         ]
         state.current_batch_ids = []
 
+    def _synthesize(self, state, gateway):
+        if not state.read_notes:
+            state.analysis.setdefault("limitations", []).append(
+                "Không có ghi chú nguồn hợp lệ để tổng hợp; chưa đánh giá nội dung."
+            )
+            state.status = "incomplete"
+            state.error_code = "scientific_notes_unavailable"
+            self._event(state, "scientific_review", "synthesis_not_assessed")
+            return
+        ids = list(dict.fromkeys(
+            r["chunk_id"] for note in state.read_notes for r in note["evidence"]
+        ))
+        context = self._context(state, gateway, "scientific_review", ids)
+        context.update(scientific_phase="synthesize", notes=state.read_notes)
+        output = self._invoke(state, "scientific_review", context)
+        for key, value in output["analysis"].items():
+            state.analysis.setdefault(key, []).append(value)
+        self._stage(state, output["findings"], "scientific_review", ids)
+        state.scientific_synthesized = True
+
     def _compare(self, state: RunState, gateway: ToolGateway, paper_id: str) -> None:
         progress = state.comparison_progress.get(paper_id)
         if progress is not None:
             self._compare_batch(state, gateway, paper_id, progress)
             return
-        query = " ".join(item["claim"] for item in state.findings[:3])
+        query = " ".join(
+            item["claim"] for item in (state.findings + state.pending_findings)[:3]
+        )
         sources = gateway.execute(
             ToolCall(
                 agent="related_work",
@@ -755,6 +822,24 @@ class AgentRunner:
 
     def _supervisor_action(self, state: RunState) -> AgentAction:
         """Use the sole legal action when model output cannot be parsed."""
+        selected = eligible_actions(state)
+        references = sorted(
+            set(state.scope.reference_versions) - set(state.reference_assessments)
+        )
+        if (
+            state.efficient_review and state.call_counts.get("supervisor", 0) > 0
+            and len(selected) == 1
+            and (selected[0] != "compare" or len(references) == 1)
+        ):
+            action = AgentAction(
+                action=selected[0], reason="Chuyển bước hợp lệ duy nhất bằng harness",
+                reference_paper_id=references[0] if selected[0] == "compare" else None,
+            )
+            self._event(
+                state, "supervisor", "decision_shortcut", action.reason,
+                selected_action=action.action,
+            )
+            return action
         self._event(
             state, "supervisor", "agent_started", model=self._model_id("supervisor")
         )
@@ -878,6 +963,8 @@ class AgentRunner:
             gateway = ToolGateway(self.catalog, self.events, state.run_id)
             if action.action == "analyze":
                 self._analyze(state, gateway)
+            elif action.action == "synthesize":
+                self._synthesize(state, gateway)
             elif action.action == "compare":
                 self._compare(state, gateway, action.reference_paper_id)
             elif action.action == "verify":
