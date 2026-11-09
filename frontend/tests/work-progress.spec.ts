@@ -57,7 +57,7 @@ test("two phase scientific progress distinguishes extraction from synthesis", as
   await expect(page.getByTestId("work-phase")).toHaveText("Đang tổng hợp phản biện khoa học");
 });
 
-test("explicit70k continuation preserves recorded spending and uses one resume request", async ({ page }) => {
+test("explicit budget continuation preserves recorded spending and uses one resume request", async ({ page }) => {
   let run: Run = { ...initial, status: "incomplete", error_code: "review_token_budget_exhausted",
     token_budget: { limit: 50000, spent: 45917, remaining: 4083 }, activity: activity("incomplete") };
   const requests: unknown[] = [];
@@ -66,14 +66,14 @@ test("explicit70k continuation preserves recorded spending and uses one resume r
   await page.route("**/api/v1/runs/work-run/resume", route => {
     requests.push(route.request().postDataJSON());
     run = { ...run, status: "queued", error_code: null,
-      token_budget: { limit: 90000, spent: 45917, remaining: 24083 } };
+      token_budget: { limit: 80000, spent: 45917, remaining: 34083 } };
     return route.fulfill({ json: { run_id: "work-run", review_id: "review", status: "queued" } });
   });
   await page.goto("/runs/work-run");
-  await page.getByRole("button", { name: "Nâng lên 90.000 token và tiếp tục" }).click();
-  await expect(page.getByTestId("review-token-budget")).toContainText("45.917 / 90.000");
-  expect(requests).toEqual([{ token_budget: 90000 }]);
-  await expect(page.getByRole("button", { name: "Nâng lên 90.000 token và tiếp tục" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Nâng lên 80.000 token và tiếp tục" }).click();
+  await expect(page.getByTestId("review-token-budget")).toContainText("45.917 / 80.000");
+  expect(requests).toEqual([{ token_budget: 80000 }]);
+  await expect(page.getByRole("button", { name: "Nâng lên 110.000 token và tiếp tục" })).toHaveCount(1);
 });
 
 test("work phases track polling without treating complete reading as a complete review", async ({ page }) => {

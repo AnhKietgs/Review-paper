@@ -115,10 +115,9 @@ class RunWorker:
             "scientific_synthesis": (settings.groq_scientific_review_model, 1024),
             "scientific_review": (settings.groq_scientific_review_model, 3072),
             "related_work": (settings.groq_related_work_model, 2048),
-            # A batch holds at most four findings, each with a short verdict
-            # reason. 1024 tokens leaves room for the complete JSON response
-            # while avoiding the previous 2048-token reservation per batch.
-            "evidence_verifier": (settings.groq_evidence_verifier_model, 1024),
+            # Keep enough completion room for model reasoning plus structured
+            # JSON; lower caps caused malformed/truncated verifier responses.
+            "evidence_verifier": (settings.groq_evidence_verifier_model, 2560),
         }
 
         def logical_role(role):

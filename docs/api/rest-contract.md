@@ -40,18 +40,20 @@ Permanent authentication, model and input errors require correcting the cause.
 `GET /runs/{id}` also returns `token_budget: {limit, spent, remaining}`. Spending
 includes conservative charges for attempts with unknown usage and is updated at
 checkpoint boundaries. `incomplete` with `review_token_budget_exhausted` retains
-partial work but cannot be resumed with this endpoint or exported as a completed
-report. It is distinct from provider quota exhaustion.
+partial work and can only resume after an explicit budget extension; it cannot be
+exported as a completed report. It is distinct from provider quota exhaustion.
 
-Explicit trial continuation: `POST /runs/{id}/resume` may accept
-`{"token_budget":90000}` for an `incomplete` run with
-`review_token_budget_exhausted`. The new total allowance must exceed both its old
-limit and its recorded/conservative spending. In one serialized transaction it
+Explicit budget continuation: `POST /runs/{id}/resume` may accept a
+`token_budget` for an `incomplete` run with `review_token_budget_exhausted`.
+Each explicit increase must add exactly 30,000 tokens (or the smaller amount
+needed to reach the 150,000 per-run ceiling), exceed recorded/conservative
+spending, and cannot exceed that ceiling. In one serialized transaction it
 records `review_budget_extended` (previous/new limit and spending), requeues the
 same run/revision and preserves all checkpoint/subcall outputs. Missing extension
-does not unlock budget failures; invalid values/unknown fields return422 and
-ineligible states return409. Duplicate concurrent requests cannot raise or enqueue
-twice. Ordinary interrupted/provider-error resume keeps its existing behavior.
-The default for other/new runs stays50k; this does not extend Groq daily quota.
+does not unlock budget failures; invalid values/unknown fields return 422 and
+ineligible states return 409. Duplicate concurrent requests cannot raise or
+enqueue twice. Ordinary interrupted/provider-error resume keeps its existing
+behavior. The default for new runs remains 50,000 tokens. The per-run ceiling
+does not extend Groq's separate per-minute or daily quotas.
 Extension also rejects a deleted review (404) or a newer active sibling for the
 same requested review (409), before changing the allowance or checkpoint.

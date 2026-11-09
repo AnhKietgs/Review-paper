@@ -2,7 +2,9 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.harness.token_budget import MAX_REVIEW_TOKEN_BUDGET
 
 
 class RunRequest(BaseModel):
@@ -20,7 +22,9 @@ class RunAccepted(BaseModel):
 
 
 class ResumeRunRequest(BaseModel):
-    """Optional explicit trial extension; absence preserves ordinary resume."""
+    """Optional explicit budget extension; absence preserves ordinary resume."""
 
     model_config = ConfigDict(extra="forbid")
-    token_budget: Literal[90000] | None = None
+    token_budget: int | None = Field(
+        default=None, ge=1, le=MAX_REVIEW_TOKEN_BUDGET,
+    )

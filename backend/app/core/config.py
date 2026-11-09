@@ -21,7 +21,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     groq_tokens_per_minute: int = 8000
     groq_requests_per_minute: int = 30
     review_token_budget: int = 50000
-    review_findings_per_criterion: int = 2
+    review_findings_per_criterion: int = 4
     groq_scientific_extraction_model: str = "openai/gpt-oss-20b"
 
     @classmethod
@@ -60,6 +60,6 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             ),
             review_token_budget=max(1, int(os.getenv("REVIEW_TOKEN_BUDGET", "50000"))),
             review_findings_per_criterion=max(
-                1, int(os.getenv("REVIEW_FINDINGS_PER_CRITERION", "2")),
+                1, int(os.getenv("REVIEW_FINDINGS_PER_CRITERION", "4")),
             ),
         )

@@ -54,18 +54,18 @@ def budget_stopped(api_client, review_seed, limit=50000, spent=45917):
     return accepted
 
 
-def test_explicit_70k_extension_resumes_same_checkpoint_without_resetting_spend(
+def test_explicit_extension_resumes_same_checkpoint_without_resetting_spend(
     api_client, review_seed,
 ):
     accepted = budget_stopped(api_client, review_seed)
     url = f"/api/v1/runs/{accepted['run_id']}/resume"
     assert api_client.post(url).status_code == 409
-    resumed = api_client.post(url, json={"token_budget": 90000})
+    resumed = api_client.post(url, json={"token_budget": 80000})
     assert resumed.status_code == 202, resumed.text
     assert resumed.json()["run_id"] == accepted["run_id"]
     assert resumed.json()["review_id"] == accepted["review_id"]
     actual = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
-    assert actual["token_budget"] == {"limit": 90000, "spent": 45917, "remaining": 24083}
+    assert actual["token_budget"] == {"limit": 80000, "spent": 45917, "remaining": 34083}
     assert actual["usage"] == {"calls": 20, "tokens": 45917}
     assert actual["status"] == "queued"
     with UnitOfWork() as unit:
@@ -73,20 +73,22 @@ def test_explicit_70k_extension_resumes_same_checkpoint_without_resetting_spend(
         assert saved.turn_progress.action.action == "verify"
         assert len(saved.turn_progress.work_contexts) == 2
         assert len(saved.turn_progress.work_outputs) == 1
-    assert api_client.post(url, json={"token_budget": 90000}).status_code == 409
+    assert api_client.post(url, json={"token_budget": 80000}).status_code == 409
     events = api_client.get(f"/api/v1/runs/{accepted['run_id']}/events").json()["items"]
     extension = next(e for e in events if e["action"] == "review_budget_extended")
-    assert extension["payload"] == {"previous_limit": 50000, "new_limit": 90000,
+    assert extension["payload"] == {"previous_limit": 50000, "new_limit": 80000,
                                     "spent": 45917}
 
 
-@pytest.mark.parametrize("limit,spent", [(90000, 65000), (50000, 71000)])
+@pytest.mark.parametrize("limit,spent,requested", [
+    (90000, 65000, 150000), (50000, 71000, 90000),
+])
 def test_budget_extension_cannot_reset_or_underfund_existing_usage(
-    api_client, review_seed, limit, spent,
+    api_client, review_seed, limit, spent, requested,
 ):
     accepted = budget_stopped(api_client, review_seed, limit, spent)
     response = api_client.post(f"/api/v1/runs/{accepted['run_id']}/resume",
-                               json={"token_budget": 90000})
+                               json={"token_budget": requested})
     assert response.status_code == 409
     actual = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
     assert actual["status"] == "incomplete"
@@ -109,28 +111,28 @@ def test_budget_extension_rejects_non_budget_stopped_runs(
     assert actual["token_budget"]["limit"] == 50000
 
 
-def test_70k_extension_has_strict_body_and_serializes_duplicate_requests(
+def test_budget_extension_has_strict_body_and_serializes_duplicate_requests(
     api_client, review_seed,
 ):
     accepted = budget_stopped(api_client, review_seed)
     url = f"/api/v1/runs/{accepted['run_id']}/resume"
-    assert api_client.post(url, json={"token_budget": 110000}).status_code == 422
+    assert api_client.post(url, json={"token_budget": 160000}).status_code == 422
     assert api_client.post(url, json={"reset_spend": True}).status_code == 422
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(
-            lambda _: api_client.post(url, json={"token_budget": 90000}).status_code,
+            lambda _: api_client.post(url, json={"token_budget": 80000}).status_code,
             range(2),
         ))
     assert sorted(results) == [202, 409]
     actual = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
-    assert actual["token_budget"] == {"limit": 90000, "spent": 45917, "remaining": 24083}
+    assert actual["token_budget"] == {"limit": 80000, "spent": 45917, "remaining": 34083}
 
 
 def test_budget_extension_does_not_restart_a_deleted_review(api_client, review_seed):
     accepted = budget_stopped(api_client, review_seed)
     assert api_client.delete(f"/api/v1/reviews/{accepted['review_id']}").status_code == 204
     response = api_client.post(f"/api/v1/runs/{accepted['run_id']}/resume",
-                               json={"token_budget": 90000})
+                               json={"token_budget": 80000})
     assert response.status_code == 404
     actual = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
     assert actual["status"] == "incomplete"
@@ -144,7 +146,7 @@ def test_budget_extension_conflicts_with_a_newer_active_sibling(api_client, revi
     newer = api_client.post(f"/api/v1/reviews/{source}/runs")
     assert newer.status_code == 202
     response = api_client.post(f"/api/v1/runs/{accepted['run_id']}/resume",
-                               json={"token_budget": 90000})
+                               json={"token_budget": 80000})
     assert response.status_code == 409
     actual = api_client.get(f"/api/v1/runs/{accepted['run_id']}").json()
     assert actual["status"] == "incomplete"
@@ -580,6 +582,7 @@ def test_persist_and_cancel_serialize_before_reading_run_status(
 
 @pytest.mark.parametrize("code", [
     "provider_unavailable", "provider_timeout", "provider_connection_error",
+    "invalid_model_output",
 ])
 def test_provider_failure_resumes_existing_successful_subtask_checkpoint(
     api_client, review_seed, code,

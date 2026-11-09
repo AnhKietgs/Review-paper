@@ -175,7 +175,7 @@ configuration; changing those during a paused run may require a new revision.
 ## Review token economy
 
 New runs snapshot `REVIEW_TOKEN_BUDGET` (default50,000 across all models) and
-`REVIEW_FINDINGS_PER_CRITERION` (default2). Each HTTP attempt reserves estimated
+`REVIEW_FINDINGS_PER_CRITERION` (default4). Each HTTP attempt reserves estimated
 input plus the output allowance before sending; retries and JSON repairs share
 the ledger. Reported usage reconciles successful requests; unknown usage remains
 conservatively charged and confirmed429 rejection releases the charge. At least

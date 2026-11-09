@@ -26,9 +26,10 @@ export default function RunInspector() {
   const waiting=run?.status==="running"&&(run.activity?run.activity.phase==="waiting_quota":!!run.cooldown_until);
   const remainingSeconds=retryAt?Math.max(0,Math.ceil((new Date(retryAt).getTime()-clock)/1000)):0;
   const countdown=`${String(Math.floor(remainingSeconds/60)).padStart(2,"0")}:${String(remainingSeconds%60).padStart(2,"0")}`;
+  const nextBudget=run?.token_budget?Math.min(run.token_budget.limit+30000,150000):null;
   async function control(action:"cancel"|"resume"|"extend") {
     setControlBusy(action);setError("");
-    try {await api(`/runs/${id}/${action==="extend"?"resume":action}`,{method:"POST",...(action==="extend"?{body:JSON.stringify({token_budget:90000})}:{})});setResume(value=>value+1);}
+    try {await api(`/runs/${id}/${action==="extend"?"resume":action}`,{method:"POST",...(action==="extend"&&nextBudget?{body:JSON.stringify({token_budget:nextBudget})}:{})});setResume(value=>value+1);}
     catch(cause) {setError(errorMessage(cause));}
     finally {setControlBusy(null);}
   }
@@ -37,8 +38,8 @@ export default function RunInspector() {
       <span data-testid="run-status" role="status" aria-label={run.status === "running" ? (waiting ? "Đang chờ hạn mức Groq" : "Đang chạy review") : run.status} className={`status ${run.status} ${run.status === "running" && !waiting ? "run-live" : ""}`}>{waiting ? "waiting" : run.status}</span>
       <div className="actions">
         {["queued","running"].includes(run.status) ? <span className="run-review-locked">Bản review sẽ mở khi xử lý xong</span> : <Link href={`/reviews/${run.review_id}`}>Mở bản review →</Link>}
-        {(run.status==="interrupted"||(run.status==="failed"&&["rate_limited","quota_request_too_large","provider_unavailable","provider_timeout","provider_connection_error"].includes(run.error_code??"")))&&<button disabled={!!controlBusy} onClick={()=>control("resume")}>{controlBusy==="resume"?"Đang tiếp tục…":"Tiếp tục từ checkpoint"}</button>}
-        {run.status==="incomplete"&&run.error_code==="review_token_budget_exhausted"&&run.token_budget&&run.token_budget.limit<90000&&run.token_budget.spent<90000&&<button disabled={!!controlBusy} title="Tăng tổng giới hạn lên 90.000, giữ nguyên token đã tính và tiếp tục checkpoint; không tăng quota Groq." onClick={()=>control("extend")}>{controlBusy==="extend"?"Đang nâng ngân sách…":"Nâng lên 90.000 token và tiếp tục"}</button>}
+        {(run.status==="interrupted"||(run.status==="failed"&&["rate_limited","quota_request_too_large","provider_unavailable","provider_timeout","provider_connection_error","invalid_model_output"].includes(run.error_code??"")))&&<button disabled={!!controlBusy} onClick={()=>control("resume")}>{controlBusy==="resume"?"Đang tiếp tục…":"Tiếp tục từ checkpoint"}</button>}
+        {run.status==="incomplete"&&run.error_code==="review_token_budget_exhausted"&&run.token_budget&&nextBudget&&run.token_budget.limit<150000&&run.token_budget.spent<nextBudget&&<button disabled={!!controlBusy} title="Tăng ngân sách thêm tối đa 30.000 token, giữ nguyên kết quả và checkpoint rồi tiếp tục. Không tăng quota Groq." onClick={()=>control("extend")}>{controlBusy==="extend"?"Đang nâng ngân sách…":`Nâng lên ${nextBudget.toLocaleString("vi-VN")} token và tiếp tục`}</button>}
         {["queued","running","interrupted","failed"].includes(run.status)&&<button className="danger-button" disabled={!!controlBusy} onClick={()=>control("cancel")}>{controlBusy==="cancel"?"Đang dừng…":"Dừng review"}</button>}
       </div>
     </div>

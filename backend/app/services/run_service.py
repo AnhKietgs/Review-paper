@@ -14,6 +14,10 @@ from app.harness.events import RunEventInput, RunEventRecorder
 from app.harness.activity import get_activity
 from app.harness.memory import RunMemory
 from app.harness.state import RunScope, RunState
+from app.harness.token_budget import (
+    MAX_REVIEW_TOKEN_BUDGET,
+    REVIEW_TOKEN_BUDGET_INCREMENT,
+)
 from app.infrastructure.persistence.orm_models import RunRow
 from app.infrastructure.persistence.run_repository import SqlRunRepository
 from app.infrastructure.persistence.source_catalog import SqlSourceCatalog
@@ -172,17 +176,24 @@ class RunService:
         return {"items": self.repository.events(run_id, after)}
 
     def _extend_budget(self, row, state, limit: int) -> None:
-        """Only explicitly extend a budget-stopped run, never reset consumption."""
+        """Explicitly add one budget step to a stopped run, preserving usage."""
         spent = max(state.token_spent, row.usage.get("tokens", 0))
+        next_limit = min(
+            state.token_budget + REVIEW_TOKEN_BUDGET_INCREMENT,
+            MAX_REVIEW_TOKEN_BUDGET,
+        )
         if not (
             row.status == "incomplete"
             and row.error_code == "review_token_budget_exhausted"
-            and limit == 90000 and limit > max(state.token_budget, spent)
+            and state.token_budget < MAX_REVIEW_TOKEN_BUDGET
+            and limit == next_limit
+            and limit > max(state.token_budget, spent)
         ):
             raise ConflictError(
                 "budget_not_extendable",
-                "Chỉ nâng lên 90.000 khi lượt dừng do thiếu ngân sách "
-                "và giới hạn mới lớn hơn giới hạn cũ cùng số token đã tính.",
+                "Chỉ có thể tăng thêm tối đa 30.000 token mỗi lần, đến trần "
+                "150.000, khi lượt dừng do thiếu ngân sách và mức mới đủ "
+                "lớn hơn lượng token đã tính.",
             )
         ReviewService(self.session).get(row.review_id)
         previous = state.token_budget
@@ -214,7 +225,7 @@ class RunService:
         if token_budget is None and row.status != "interrupted" and not (
             row.status == "failed" and row.error_code in {
                 "rate_limited", "quota_request_too_large", "provider_unavailable",
-                "provider_timeout", "provider_connection_error",
+                "provider_timeout", "provider_connection_error", "invalid_model_output",
             }
         ):
             raise ConflictError("not_resumable", "Run cannot resume")

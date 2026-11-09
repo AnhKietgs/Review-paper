@@ -4,6 +4,9 @@ from dataclasses import dataclass
 
 from app.agents.ports import LLMFailure
 
+MAX_REVIEW_TOKEN_BUDGET = 150_000
+REVIEW_TOKEN_BUDGET_INCREMENT = 30_000
+
 
 @dataclass
 class RunTokenBudget:

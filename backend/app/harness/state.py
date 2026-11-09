@@ -60,7 +60,7 @@ class RunState(BaseModel):
     max_turns: int = 120
     token_budget: int = Field(default=50000, ge=1)
     token_spent: int = Field(default=0, ge=0)
-    max_findings_per_criterion: int = Field(default=2, ge=1)
+    max_findings_per_criterion: int = Field(default=4, ge=1)
     status: str = "running"
     call_counts: dict[str, int] = Field(default_factory=dict)
     initialized: bool = False

@@ -22,13 +22,22 @@ def resolve_notes(output, sources, resolver, scope, criteria):
 
 
 def merge_notes(existing, incoming):
-    """Keep distinct source locations; exact repeats do not add model work."""
-    result, seen = [], set()
+    """Merge identical facts and retain up to two independent source spans."""
+    result, positions = [], {}
     for note in existing + incoming:
-        key = (note["criterion_code"], " ".join(note["text"].split()).casefold(), tuple(
-            sorted((r["chunk_id"], r["span_id"]) for r in note["evidence"])
-        ))
-        if key not in seen:
-            result.append(note)
-            seen.add(key)
+        key = (note["criterion_code"], " ".join(note["text"].split()).casefold())
+        index = positions.get(key)
+        if index is None:
+            positions[key] = len(result)
+            result.append({**note, "evidence": list(note["evidence"])})
+            continue
+        merged = result[index]
+        identities = {
+            (item["chunk_id"], item["span_id"]) for item in merged["evidence"]
+        }
+        for reference in note["evidence"]:
+            identity = (reference["chunk_id"], reference["span_id"])
+            if identity not in identities and len(merged["evidence"]) < 2:
+                merged["evidence"].append(reference)
+                identities.add(identity)
     return result

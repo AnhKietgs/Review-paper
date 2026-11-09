@@ -140,10 +140,12 @@ class GroqClient:
     def _request(self, messages, rate_waited, provider_retries):
         rate_retries = 0
         json_retries = 0
-        input_tokens = estimate_input_tokens(messages)
-        output_tokens = self._completion_budget(input_tokens)
         budget = self._events["budget"]
         while True:
+            # A JSON repair retry adds instructions to `messages`; reserve the
+            # expanded request size instead of reusing the previous estimate.
+            input_tokens = estimate_input_tokens(messages)
+            output_tokens = self._completion_budget(input_tokens)
             self._check_cancelled()
             if budget:
                 budget.check(input_tokens + output_tokens)
@@ -204,6 +206,14 @@ class GroqClient:
                     if json_retries:
                         raise LLMFailure("invalid_model_output") from exc
                     json_retries += 1
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "The provider rejected the previous JSON. Return one "
+                            "complete JSON object matching the schema; do not add "
+                            "markdown or text outside JSON."
+                        ),
+                    })
                     continue
                 self._handle_provider_error(exc, provider_retries)
 
@@ -236,12 +246,21 @@ class GroqClient:
             except ValidationError as exc:
                 if attempt:
                     raise LLMFailure("invalid_model_output") from exc
+                errors = exc.errors(include_url=False)
+                summary = "; ".join(
+                    f"{'.'.join(str(part) for part in error.get('loc', ()))}:"
+                    f"{error.get('type', 'invalid')}"
+                    for error in errors[:8]
+                )[:400]
                 request.append(
                     {
                         "role": "user",
-                        "content": "Previous output failed the JSON schema. "
-                        "Return a valid object, preserving source IDs and exact quotes "
-                        "from the original context.",
+                        "content": (
+                            "The previous JSON did not match the required schema. "
+                            f"Validation issues: {summary}. Return one complete JSON "
+                            "object matching the schema. Preserve every required ID; "
+                            "do not add markdown or text outside JSON."
+                        ),
                     }
                 )
         raise LLMFailure("invalid_model_output")
