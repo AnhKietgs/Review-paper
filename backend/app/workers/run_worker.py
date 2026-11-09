@@ -111,8 +111,8 @@ class RunWorker:
 
         models = {
             "supervisor": (settings.groq_supervisor_model, 256),
-            "scientific_extract": (settings.groq_scientific_extraction_model, 1536),
-            "scientific_synthesis": (settings.groq_scientific_review_model, 2048),
+            "scientific_extract": (settings.groq_scientific_extraction_model, 768),
+            "scientific_synthesis": (settings.groq_scientific_review_model, 1024),
             "scientific_review": (settings.groq_scientific_review_model, 3072),
             "related_work": (settings.groq_related_work_model, 2048),
             # A batch holds at most four findings, each with a short verdict
