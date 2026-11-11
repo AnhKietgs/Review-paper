@@ -4,15 +4,23 @@ Hệ thống đa tác nhân AI phân tích, phản biện và đánh giá bài b
 
 **Công nghệ:** FastAPI · Next.js/Node.js · LangGraph · Groq API · SQLite · MarkItDown · Docker Compose.
 
-## Chạy thử bằng một dòng lệnh
+## Clone và chạy thử bằng một dòng lệnh
 
-Cài và mở **Docker Desktop**, cài **Git**. Chạy lệnh dưới trong **Git Bash, Bash hoặc PowerShell 7+**:
+Cài **Git**, cài và mở **Docker Desktop** (Linux containers). Mở **Git Bash, Bash hoặc PowerShell 7+** tại nơi muốn lưu dự án rồi dán đúng một dòng:
 
 ```bash
-git clone https://github.com/AnhKietgs/Review-paper-b-ng-AI-Agent.git paper-review && cd paper-review && docker compose up -d --build --wait
+git clone https://github.com/AnhKietgs/Review-paper.git paper-review && cd paper-review && docker compose up -d --build --wait
 ```
 
-Lệnh sẽ tải code vào thư mục `paper-review`, build và khởi động ứng dụng. Khi database còn trống, backend tự nạp 2 paper đang dùng trong dự án và rubric `Review bài báo AI tiếng Việt` với 6 tiêu chí theo đúng thứ tự. Lần build đầu cần Internet để tải image và thư viện nên có thể mất vài phút.
+Sau khi lệnh hoàn tất, mở **[http://localhost:3000](http://localhost:3000)**. Khi khởi động lần đầu với database trống, hệ thống **tự nạp sẵn 2 paper và bộ rubric**, không cần tải tài liệu lên, tạo rubric hay chạy lệnh seed riêng:
+
+| Dữ liệu có sẵn | Nội dung |
+|---|---|
+| Paper chính | Nghiên cứu ứng dụng công cụ trí tuệ nhân tạo trong hỗ trợ người nước ngoài học tiếng Việt — PDF 9 trang |
+| Paper đối chiếu | ChatGPT in Language Learning: Perspectives from Vietnamese Students in Vietnam and the USA — PDF 14 trang; trong ứng dụng có tiêu đề “nghiên cứu việc dùng ChatGPT hỗ trợ học ngôn ngữ trong bối cảnh sinh viên Việt Nam” |
+| Rubric | **Review bài báo AI tiếng Việt**, gồm **6 tiêu chí** và hướng dẫn đánh giá theo đúng thứ tự |
+
+Lần build đầu cần Internet để tải image và thư viện nên có thể mất vài phút. Thư mục `paper-review` cần chưa tồn tại; các cổng **3000** và **8000** cần còn trống.
 
 | Địa chỉ | Chức năng |
 |---|---|
@@ -20,7 +28,7 @@ Lệnh sẽ tải code vào thư mục `paper-review`, build và khởi động 
 | [localhost:8000/docs](http://localhost:8000/docs) | Swagger / tài liệu REST API |
 | [localhost:8000/api/v1/health](http://localhost:8000/api/v1/health) | Kiểm tra backend |
 
-**Mặc định sau khi clone:** không cần `.env` hay API key; Docker chạy chế độ `fixture` với kết quả mô phỏng để thử quy trình. Muốn nhận xét do AI thật sinh ra, cấu hình Groq theo phần bên dưới. Các cổng **3000** và **8000** cần còn trống.
+**Mặc định sau khi clone:** không cần `.env` hay API key để mở ứng dụng và xem dữ liệu có sẵn. Docker chạy chế độ `fixture` với kết quả mô phỏng để thử quy trình; 2 PDF và rubric vẫn là bộ dữ liệu thực tế đi kèm dự án. Muốn nhận xét do AI thật sinh ra, cấu hình Groq theo phần bên dưới.
 
 Nếu đã tải code về, mở terminal tại thư mục có `compose.yaml` và chạy:
 
