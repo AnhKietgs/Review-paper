@@ -1,0 +1,73 @@
+{
+  "papers": [
+    {
+      "key": "paper-1",
+      "filename": "13685-33601-1-PB.pdf",
+      "title": "Nghiên cứu ứng dụng công cụ trí tuệ nhân tạo trong hỗ trợ người nước ngoài học tiếng Việt",
+      "authors": [
+        "Hoang Thi Huong",
+        "Nguyen Thu Quynh",
+        "Nguyen Thai Hoang"
+      ],
+      "year": null,
+      "doi": null
+    },
+    {
+      "key": "paper-2",
+      "filename": "ijli-3-2-5.pdf",
+      "title": "nghiên cứu việc dùng ChatGPT hỗ trợ học ngôn ngữ trong bối cảnh sinh viên Việt Nam",
+      "authors": [
+        "Vu Phi Ho Pham",
+        "Anh Quoc Le"
+      ],
+      "year": null,
+      "doi": null
+    }
+  ],
+  "rubrics": [
+    {
+      "key": "rubric-1",
+      "name": "Review bài báo AI tiếng Việt",
+      "description": "Đánh giá mục tiêu, đóng góp, phương pháp, kết quả và hạn chế của nghiên cứu. Mọi nhận xét cần gắn với bằng chứng trong bài; phân biệt rõ thông tin tác giả báo cáo với nhận định của reviewer.",
+      "criteria": [
+        {
+          "code": "research_objective",
+          "question": "Mục tiêu hoặc câu hỏi nghiên cứu có được nêu rõ và nhất quán với nội dung bài báo không?",
+          "guidance": "Trích dẫn vị trí nêu mục tiêu; chỉ ra nếu mục tiêu, phương pháp và kết luận không khớp nhau."
+        },
+        {
+          "code": "contribution",
+          "question": "Bài báo đóng góp điều gì, và đóng góp đó được phân biệt với các công trình trước như thế nào?",
+          "guidance": "Dựa vào phần giới thiệu và tổng quan liên quan. Nếu bài không so sánh với công trình trước, ghi rõ đây là điểm chưa đủ thông tin"
+        },
+        {
+          "code": "methodology",
+          "question": "Phương pháp nghiên cứu có phù hợp để trả lời mục tiêu nghiên cứu không?",
+          "guidance": "Xem xét thiết kế, dữ liệu hoặc người tham gia, quy trình thực hiện, công cụ và cách đánh giá. Không suy đoán chi tiết mà bài không cung cấp."
+        },
+        {
+          "code": "results",
+          "question": "Kết quả có được trình bày rõ và hỗ trợ cho kết luận của bài báo không?",
+          "guidance": "Đối chiếu kết quả được báo cáo với kết luận. Với các tuyên bố như độ chính xác cao, nêu rõ bài có mô tả dữ liệu và cách đánh giá đủ để diễn giải tuyên bố đó không."
+        },
+        {
+          "code": "evidence_traceability",
+          "question": "Các nhận xét quan trọng trong bản review có thể truy ngược đến bằng chứng cụ thể trong bài không?",
+          "guidance": "Mỗi nhận xét cần kèm đoạn trích hoặc vị trí trang/mục liên quan. Nếu thiếu bằng chứng, hãy nói rõ thay vì trình bày như một sự thật."
+        },
+        {
+          "code": "limitations_ethics",
+          "question": "Bài báo có nêu hạn chế, rủi ro đạo đức hoặc điều kiện khiến kết quả khó khái quát không?",
+          "guidance": "Kiểm tra phần hạn chế, dữ liệu và đối tượng nghiên cứu. Phân biệt hạn chế do tác giả tự nêu với vấn đề reviewer suy ra từ bằng chứng."
+        }
+      ]
+    }
+  ],
+  "review": {
+    "paper_key": "paper-1",
+    "rubric_key": "rubric-1",
+    "reference_keys": [
+      "paper-2"
+    ]
+  }
+}

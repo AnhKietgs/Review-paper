@@ -1,5 +1,6 @@
-"""Idempotent sample library creation through application services."""
+"""Load the shared paper library and ordered rubrics without overwriting edits."""
 
+import argparse
 import json
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.v1.schemas.papers import PaperCreate
-from app.api.v1.schemas.rubrics import CriterionInput, RubricCreate
+from app.api.v1.schemas.rubrics import RubricCreate
 from app.infrastructure.persistence.orm_models import PaperRow, RubricRow
 from app.infrastructure.persistence.unit_of_work import UnitOfWork
 from app.services.paper_service import PaperService
@@ -16,56 +17,49 @@ from app.services.rubric_service import RubricService
 
 
 def seed(session: Session, assets: Path) -> dict:
-    """Create missing demo records without overwriting user edits."""
-    ids = []
-    for filename, title in [
-        ("main_sample.pdf", "Demo · Evidence Links Pilot"),
-        ("related_sample.docx", "Demo · Related Study"),
-    ]:
+    """Create missing shared records, preserving existing local edits."""
+    library = json.loads((assets / "library.json").read_text(encoding="utf-8-sig"))
+    papers = {}
+    for item in library["papers"]:
+        metadata = PaperCreate.model_validate(item)
+        source_path = (assets / item["filename"]).resolve()
+        if not source_path.is_relative_to(assets.resolve()):
+            raise ValueError("Shared source must be inside the library directory")
         existing = session.scalar(
             select(PaperRow).where(
-                PaperRow.title == title, PaperRow.deleted_at.is_(None)
+                PaperRow.title == metadata.title, PaperRow.deleted_at.is_(None)
             )
         )
         if existing is None:
-            with (assets / filename).open("rb") as source:
-                paper = PaperService(session).create(
-                    UploadFile(filename=filename, file=source), PaperCreate(title=title)
+            with source_path.open("rb") as source:
+                existing = PaperService(session).create(
+                    UploadFile(filename=item["filename"], file=source), metadata
                 )
-                ids.append(paper.id)
-        else:
-            ids.append(existing.id)
-    rubric = session.scalar(
-        select(RubricRow).where(
-            RubricRow.name == "Demo · Scientific Review", RubricRow.deleted_at.is_(None)
-        )
-    )
-    if rubric is None:
-        rubric = RubricService(session).create(
-            RubricCreate(
-                name="Demo · Scientific Review",
-                description="Qualitative review of methods, evidence and limitations.",
-                criteria=[
-                    CriterionInput(code=code, question=question)
-                    for code, question in [
-                        (
-                            "methodology",
-                            "Is the methodology supported by the reported design?",
-                        ),
-                        ("evidence", "What evidence supports the reported results?"),
-                        (
-                            "limitations",
-                            "Which limitations are acknowledged or not addressed?",
-                        ),
-                    ]
-                ],
+        papers[item["key"]] = existing.id
+    rubrics = {}
+    for item in library["rubrics"]:
+        metadata = RubricCreate.model_validate(item)
+        existing = session.scalar(
+            select(RubricRow).where(
+                RubricRow.name == metadata.name, RubricRow.deleted_at.is_(None)
             )
         )
-    return {"paper_id": ids[0], "rubric_id": rubric.id, "reference_paper_ids": ids[1:]}
+        if existing is None:
+            existing = RubricService(session).create(metadata)
+        rubrics[item["key"]] = existing.id
+    selection = library["review"]
+    return {
+        "paper_id": papers[selection["paper_key"]],
+        "rubric_id": rubrics[selection["rubric_key"]],
+        "reference_paper_ids": [papers[key] for key in selection["reference_keys"]],
+    }
 
 
 def main() -> None:
-    """Seed from the Compose read-only mount or repository demo directory."""
+    """Load the shared library explicitly or once on a fresh Docker database."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--if-empty", action="store_true")
+    args = parser.parse_args()
     mounted = Path("/app/demo_data")
     assets = (
         mounted
@@ -73,6 +67,12 @@ def main() -> None:
         else Path(__file__).resolve().parents[3] / "demo_data"
     )
     with UnitOfWork() as unit:
+        if args.if_empty and (
+            unit.session.scalar(select(PaperRow.id).limit(1))
+            or unit.session.scalar(select(RubricRow.id).limit(1))
+        ):
+            print("Existing library preserved; automatic import skipped.")
+            return
         result = seed(unit.session, assets)
     print(json.dumps(result, indent=2))
 

@@ -6,7 +6,7 @@ test("upload → AI review → inspect → export → optional edit and verify",
   await page.goto("/papers");
   await expect(page.getByText("FIXTURE", { exact: true })).toBeVisible();
   await page.getByLabel("Tiêu đề paper").fill(title);
-  await page.getByLabel("Tệp PDF hoặc DOCX").setInputFiles(path.resolve("../demo_data/main_sample.pdf"));
+  await page.getByLabel("Tệp PDF hoặc DOCX").setInputFiles(path.resolve("../demo_data/13685-33601-1-PB.pdf"));
   await page.getByRole("button", { name: "Tải lên thư viện" }).click();
   await expect(page.getByRole("button", { name: title, exact: true })).toBeVisible();
   await page.goto("/rubrics");

@@ -9,10 +9,10 @@ Hệ thống đa tác nhân AI phân tích, phản biện và đánh giá bài b
 Cài và mở **Docker Desktop**, cài **Git**. Chạy lệnh dưới trong **Git Bash, Bash hoặc PowerShell 7+**:
 
 ```bash
-git clone https://github.com/AnhKietgs/Review-paper-b-ng-AI-Agent.git paper-review && cd paper-review && docker compose up -d --build --wait && docker compose exec -T backend python -m app.demo.seed
+git clone https://github.com/AnhKietgs/Review-paper-b-ng-AI-Agent.git paper-review && cd paper-review && docker compose up -d --build --wait
 ```
 
-Lệnh sẽ tải code vào thư mục `paper-review`, build và khởi động ứng dụng, sau đó nạp hai tài liệu và một rubric mẫu. Lần build đầu cần Internet để tải image và thư viện nên có thể mất vài phút.
+Lệnh sẽ tải code vào thư mục `paper-review`, build và khởi động ứng dụng. Khi database còn trống, backend tự nạp 2 paper đang dùng trong dự án và rubric `Review bài báo AI tiếng Việt` với 6 tiêu chí theo đúng thứ tự. Lần build đầu cần Internet để tải image và thư viện nên có thể mất vài phút.
 
 | Địa chỉ | Chức năng |
 |---|---|
@@ -28,13 +28,13 @@ Nếu đã tải code về, mở terminal tại thư mục có `compose.yaml` v�
 docker compose up -d --build --wait
 ```
 
-Lệnh seed chỉ tạo dữ liệu mẫu, có thể chạy lại an toàn và không bắt buộc khi bạn tự tải paper/tạo rubric.
+Dữ liệu chia sẻ nằm trong `demo_data/library.json` và 2 file PDF đi kèm. Lần khởi động sau giữ nguyên dữ liệu và chỉnh sửa trên máy. Đặt `SEED_SAMPLE_DATA=0` trong `.env` nếu muốn khởi động với thư viện trống. Có thể nạp bổ sung bằng `docker compose exec -T backend python -m app.demo.seed`; lệnh bỏ qua paper trùng tiêu đề và rubric trùng tên.
 
 ## Thử một lượt review
 
 1. Mở **Bản review** và tạo bản mới.
-2. Chọn paper chính `Demo · Evidence Links Pilot` và rubric `Demo · Scientific Review`.
-3. Có thể chọn thêm `Demo · Related Study` làm công trình đối chiếu.
+2. Chọn paper chính `Nghiên cứu ứng dụng công cụ trí tuệ nhân tạo trong hỗ trợ người nước ngoài học tiếng Việt` và rubric `Review bài báo AI tiếng Việt`.
+3. Có thể chọn thêm `nghiên cứu việc dùng ChatGPT hỗ trợ học ngôn ngữ trong bối cảnh sinh viên Việt Nam` làm công trình đối chiếu.
 4. Bắt đầu review, theo dõi agent và các bước xử lý trong màn hình tiến trình.
 5. Khi hoàn tất, mở bản review, xem trích dẫn nguồn và tải báo cáo Markdown.
 
@@ -78,7 +78,7 @@ Chạy tại thư mục gốc dự án:
 | Xem trạng thái | `docker compose ps` |
 | Xem log backend | `docker compose logs -f backend` |
 | Build lại sau khi cập nhật code | `docker compose up -d --build --wait` |
-| Nạp dữ liệu mẫu | `docker compose exec -T backend python -m app.demo.seed` |
+| Nạp bộ paper và rubric chia sẻ | `docker compose exec -T backend python -m app.demo.seed` |
 | Dừng ứng dụng, giữ dữ liệu | `docker compose down` |
 
 Dữ liệu được lưu trong Docker volume `app_data`. Lệnh `docker compose down -v` sẽ xóa cả dữ liệu trong volume.
@@ -103,7 +103,7 @@ backend/app/agents/          Agent contracts, prompts và LangGraph
 backend/app/harness/         Điều phối, context, permission và kiểm chứng
 backend/app/workers/         Worker xử lý review
 frontend/src/               Giao diện Next.js
-demo_data/                  Tài liệu và dữ liệu demo
+demo_data/                  2 PDF thực tế và rubric chia sẻ (library.json)
 docs/                       Tài liệu API và kiến trúc
 ```
 

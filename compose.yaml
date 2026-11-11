@@ -3,6 +3,7 @@ services:
     build: ./backend
     environment:
       DATA_DIR: /app/data
+      SEED_SAMPLE_DATA: ${SEED_SAMPLE_DATA:-1}
       DEMO_LLM_MODE: ${DEMO_LLM_MODE:-fixture}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_SUPERVISOR_MODEL: ${GROQ_SUPERVISOR_MODEL:-openai/gpt-oss-20b}
