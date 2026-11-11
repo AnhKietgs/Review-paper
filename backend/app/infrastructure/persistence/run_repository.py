@@ -16,6 +16,20 @@ class SqlRunRepository:
         """Read a durable execution."""
         return self.session.get(RunRow, run_id)
 
+    def latest_ids_for_reviews(self, review_ids: list[str]) -> dict[str, str]:
+        """Read the latest run for each exact revision in one page query."""
+        if not review_ids:
+            return {}
+        rows = self.session.execute(
+            select(RunRow.review_id, RunRow.id)
+            .where(RunRow.review_id.in_(review_ids))
+            .order_by(RunRow.created_at.desc(), RunRow.id.desc())
+        )
+        latest: dict[str, str] = {}
+        for review_id, run_id in rows:
+            latest.setdefault(review_id, run_id)
+        return latest
+
     def events(self, run_id: str, after: int) -> list[dict]:
         """Return up to 1000 new trace records."""
         rows = self.session.scalars(

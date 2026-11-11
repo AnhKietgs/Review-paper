@@ -3,13 +3,16 @@
 from io import BytesIO
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pymupdf
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from app.infrastructure.persistence.database import get_engine
-from app.infrastructure.persistence.orm_models import Base
+from app.infrastructure.persistence.orm_models import Base, RunRow
 from app.main import app
 from app.workers.run_worker import RunWorker
 
@@ -161,6 +164,40 @@ def test_findings_follow_frozen_rubric_criterion_order(client: TestClient):
     assert [item["claim"] for item in fetched.json()["findings"]] == [
         "Objective", "Method A", "Method B", "Limitation", "Other note"
     ]
+
+
+def test_history_latest_run_belongs_to_exact_revision(client: TestClient):
+    """History selects the newest run without crossing revision boundaries."""
+    draft = client.post(
+        "/api/v1/reviews",
+        json={"paper_id": paper(client, "history"), "rubric_id": rubric(client)},
+    ).json()
+    sibling = client.post(
+        f"/api/v1/reviews/{draft['id']}/revisions"
+    ).json()
+    empty = client.get("/api/v1/reviews").json()
+    assert all(item["latest_run_id"] is None for item in empty["items"])
+    now = datetime.now(timezone.utc)
+    run_ids = [str(uuid4()) for _ in range(3)]
+    with Session(get_engine()) as session:
+        for index, review_id in enumerate(
+            [draft["id"], draft["id"], sibling["id"]]
+        ):
+            session.add(RunRow(
+                id=run_ids[index], review_id=review_id,
+                requested_review_id=draft["id"], status="completed",
+                created_at=now + timedelta(seconds=index),
+            ))
+        session.commit()
+    history = client.get("/api/v1/reviews").json()
+    by_id = {item["id"]: item for item in history["items"]}
+    assert by_id[draft["id"]]["latest_run_id"] == run_ids[1]
+    assert by_id[sibling["id"]]["latest_run_id"] == run_ids[2]
+    page = client.get("/api/v1/reviews?limit=1&offset=1").json()
+    assert len(page["items"]) == 1
+    item = page["items"][0]
+    assert item["latest_run_id"] == by_id[item["id"]]["latest_run_id"]
+    assert client.get("/api/v1/reviews?offset=100").json()["items"] == []
 
 
 def test_invalid_reference_selection(client: TestClient):

@@ -26,6 +26,7 @@ from app.infrastructure.persistence.orm_models import (
 from app.infrastructure.persistence.paper_repository import SqlPaperRepository
 from app.infrastructure.persistence.review_repository import SqlReviewRepository
 from app.infrastructure.persistence.rubric_repository import SqlRubricRepository
+from app.infrastructure.persistence.run_repository import SqlRunRepository
 
 
 class ReviewService:
@@ -143,8 +144,16 @@ class ReviewService:
     def list(self, limit: int, offset: int) -> dict:
         """Paginate active revisions."""
         rows, total = self.repository.list(limit, offset)
+        latest_run_ids = SqlRunRepository(self.session).latest_ids_for_reviews(
+            [row.id for row in rows]
+        )
         return {
-            "items": [self._read(row) for row in rows],
+            "items": [
+                self._read(row).model_copy(
+                    update={"latest_run_id": latest_run_ids.get(row.id)}
+                )
+                for row in rows
+            ],
             "total": total,
             "limit": limit,
             "offset": offset,

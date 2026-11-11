@@ -62,6 +62,7 @@ class ReviewRead(BaseModel):
     reviewer_edits: dict
     references: list[ReviewReferenceRead]
     findings: list[FindingRead]
+    latest_run_id: str | None = None
 
 
 class ReviewPage(BaseModel):

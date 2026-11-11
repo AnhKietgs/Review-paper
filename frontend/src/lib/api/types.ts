@@ -18,6 +18,7 @@ export interface Finding {
   status: string; verdict: string; compared_paper_ids: string[];
 }
 export interface Review {
+  latest_run_id?: string | null;
   id: string; paper_id: string; paper_content_version: number; rubric_id: string;
   rubric_version: number; revision: number; parent_revision_id: string | null;
   status: string; summary: string; analysis: Record<string, unknown>;
